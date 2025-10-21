@@ -1,0 +1,1609 @@
+20:22:32.080  > local roots = {
+    game:GetService("ServerScriptService"),
+    game:GetService("ReplicatedStorage"),
+    game:GetService("StarterPlayer"),
+    game:GetService("StarterGui"),
+    game:GetService("StarterPack"),
+    workspace,
+}
+
+local function fullPath(inst)
+    local parts = {}
+    while inst and inst ~= game do
+        table.insert(parts, 1, inst.Name)
+        inst = inst.Parent
+    end
+    return table.concat(parts, "/")
+end
+
+local function printChunks(text, chunk)
+    chunk = chunk or 8000
+    local i, len = 1, #text
+    while i <= len do
+        print(text:sub(i, i + chunk - 1))
+        i = i + chunk
+    end
+end
+
+for _, root in ipairs(roots) do
+    for _, inst in ipairs(root:GetDescendants()) do
+        if inst:IsA("ModuleScript") or inst:IsA("LocalScript") or inst:IsA("Script") then
+            print(("===SCRIPT===\nPATH:%s\nCLASS:%s\n--SOURCE--"):format(fullPath(inst), inst.ClassName))
+            local src = inst.Source or ""
+            if #src == 0 then
+                print("--(empty)--")
+            else
+                printChunks(src)
+            end
+            print("--ENDSOURCE--\n===ENDSCRIPT===")
+            print("") -- пустая строка-разделитель
+        end
+    end
+end  -  Studio
+  20:22:32.081  ===SCRIPT===
+PATH:ServerScriptService/HitboxDebug
+CLASS:Script
+--SOURCE--  -  Edit
+  20:22:32.081  local RS = game:GetService("ReplicatedStorage")
+local Events = RS:WaitForChild("Remotes"):WaitForChild("Events")
+local RE_Toggle = Events:WaitForChild("RE_ToggleHitboxDebug")
+
+local HitboxPartService = require(script.Parent.Services.HitboxPartService)
+
+-- При желании ограничь по правам (например, только в Studio, только владелец приватки и т.д.)
+RE_Toggle.OnServerEvent:Connect(function(player, enabled)
+	HitboxPartService:SetDebug(player, enabled and true or false)
+end)  -  Edit
+  20:22:32.081  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.081    -  Edit
+  20:22:32.081  ===SCRIPT===
+PATH:ServerScriptService/Init
+CLASS:Script
+--SOURCE--  -  Edit
+  20:22:32.081  local RS = game:GetService("ReplicatedStorage")
+
+local function ensure(parent, className, name)
+	local obj = parent:FindFirstChild(name)
+	if not obj then
+		obj = Instance.new(className)
+		obj.Name = name
+		obj.Parent = parent
+	end
+	return obj
+end
+
+-- Remotes
+local remotes = ensure(RS, "Folder", "Remotes")
+local events  = ensure(remotes, "Folder", "Events")
+local funcs   = ensure(remotes, "Folder", "Functions")
+
+ensure(events, "RemoteEvent", "RE_StateUpdate")
+ensure(events, "RemoteEvent", "RE_RequestDash")
+ensure(events, "RemoteEvent", "RE_DashOK")
+ensure(events, "RemoteEvent", "RE_M1Request")
+ensure(events, "RemoteEvent", "RE_M1Ack")
+ensure(events, "RemoteEvent", "RE_M1DoHit")
+ensure(events, "RemoteEvent", "RE_M1Impact")
+ensure(events, "RemoteEvent", "RE_ToggleHitboxDebug")
+ensure(events, "RemoteEvent", "RE_UltRequest")
+ensure(events, "RemoteEvent", "RE_UltAck")
+ensure(events, "RemoteEvent", "RE_SetBlocking")
+ensure(events, "RemoteEvent", "RE_BlockAck")
+
+-- NEW (парри кд + загрузка умений)
+ensure(events, "RemoteEvent", "RE_ParryState")           -- server->client: {readyAt, cooldown}
+ensure(events, "RemoteEvent", "RE_SetLoadout")           -- server->client: список умений
+ensure(events, "RemoteEvent", "RE_AbilityCastAck")       -- server->client: старт кд конкретного слота
+ensure(events, "RemoteEvent", "RE_RequestAbilityCast")   -- client->server: запрос каста по слоту
+
+ensure(funcs, "RemoteFunction", "RF_GetInitialState")
+
+print("[Remotes] ensured")
+
+-- Services
+local Services = script.Parent:WaitForChild("Services")
+
+local function safeRequire(name)
+	local mod = Services:FindFirstChild(name)
+	if not mod then warn("[Init] Service module not found:", name); return nil end
+	local ok, service = pcall(require, mod)
+	if not ok then warn("[Init] require failed for", name, ":", service); return nil end
+	return service
+end
+
+local function safeStart(name)
+	local s = safeRequire(name)
+	if not s then return end
+	if type(s.Start) ~= "function" then warn("[Init]", name, "has no Start()"); return end
+	local ok, err = pcall(function() s:Start() end)
+	if ok then print("[Init]", name, "started") else warn("[Init]", name..":Start() failed:", err) end
+end
+
+safeStart("PlayerService")
+safeStart("StaminaService")
+safeStart("StateSyncService")
+safeStart("DashService")
+safeStart("MeleeService")
+safeStart("UltService")
+safeStart("BlockService")
+safeStart("PlayerLoadoutService")  -- NEW
+safeStart("AbilityService")        -- NEW
+
+print("[Server] Init OK")  -  Edit
+  20:22:32.081  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.081    -  Edit
+  20:22:32.081  ===SCRIPT===
+PATH:ServerScriptService/Services/CombatService
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.081  local RS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local Constants = require(RS.Shared.Modules.Constants)
+local State     = require(RS.Shared.Modules.StateManager)
+
+local DEBUG = true
+
+local CombatService = {}
+
+local function setHumanoidHP(targetPlayer, newHp)
+	local char = targetPlayer.Character
+	if not char then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hum then return end
+	if hum.MaxHealth ~= (Constants.Resources.MaxHP or 100) then
+		hum.MaxHealth = Constants.Resources.MaxHP or 100
+	end
+	hum.Health = newHp
+end
+
+function CombatService:ApplyDamageToPlayer(attackerPlayer, targetPlayer, amount)
+	if not targetPlayer or amount <= 0 then return end
+	local hp = State:GetResource(targetPlayer, "hp") or (Constants.Resources.MaxHP or 100)
+	local newHp = math.max(0, hp - amount)
+	State:SetResource(targetPlayer, "hp", newHp)
+	setHumanoidHP(targetPlayer, newHp)
+	if DEBUG then
+		print(("[Combat] %s -> %s dmg=%d hp:%d->%d")
+			:format(attackerPlayer and attackerPlayer.Name or "NPC", targetPlayer.Name, amount, hp, newHp))
+	end
+end
+
+function CombatService:ApplyDamageToHumanoid(attackerPlayer, humanoid, amount)
+	if not humanoid or amount <= 0 then return end
+	humanoid:TakeDamage(amount)
+	if DEBUG then
+		print(("[Combat] %s -> humanoid dmg=%d"):format(attackerPlayer and attackerPlayer.Name or "NPC", amount))
+	end
+end
+
+return CombatService  -  Edit
+  20:22:32.081  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.082    -  Edit
+  20:22:32.082  ===SCRIPT===
+PATH:ServerScriptService/Services/PrivatePlusService
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.082  -- глобальные и персональные флаги (владелец приватки может переключать)
+local MarketplaceService = game:GetService("MarketplaceService")
+local Constants = require(game.ReplicatedStorage.Shared.Modules.Constants)
+
+local Service = {
+	GlobalFlags = { NoCooldown = false, InfiniteUlt = false },
+	PlayerFlags = {} -- [userId] = { NoCooldown=true/false, ... }
+}
+
+function Service:IsPrivateServer()
+	return game.PrivateServerId ~= ""
+end
+
+function Service:IsOwner(player)
+	return player and player.UserId == game.PrivateServerOwnerId
+end
+
+function Service:OwnerHasPassAsync(owner)
+	if not owner then return false end
+	local ok, owns = pcall(MarketplaceService.UserOwnsGamePassAsync, MarketplaceService, owner.UserId, Constants.PrivatePlusGamepassId)
+	return ok and owns
+end
+
+function Service:SetGlobalFlag(owner, flagName, value)
+	if not self:IsPrivateServer() or not self:IsOwner(owner) then return false end
+	local has = self:OwnerHasPassAsync(owner)
+	if not has then return false end
+	if self.GlobalFlags[flagName] == nil then return false end
+	self.GlobalFlags[flagName] = value and true or false
+	return true
+end
+
+function Service:SetPlayerFlag(owner, targetUserId, flagName, value)
+	if not self:IsPrivateServer() or not self:IsOwner(owner) then return false end
+	local has = self:OwnerHasPassAsync(owner)
+	if not has then return false end
+	self.PlayerFlags[targetUserId] = self.PlayerFlags[targetUserId] or {}
+	if self.PlayerFlags[targetUserId][flagName] == nil and self.GlobalFlags[flagName] == nil then
+		return false
+	end
+	self.PlayerFlags[targetUserId][flagName] = value and true or false
+	return true
+end
+
+function Service:GetEffectiveFlag(player, flagName)
+	local per = self.PlayerFlags[player.UserId]
+	if per and per[flagName] ~= nil then
+		return per[flagName]
+	end
+	return self.GlobalFlags[flagName] == true
+end
+
+return Service  -  Edit
+  20:22:32.082  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.082    -  Edit
+  20:22:32.082  ===SCRIPT===
+PATH:ServerScriptService/Services/PlayerService
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.082  local Players = game:GetService("Players")
+local State = require(game.ReplicatedStorage.Shared.Modules.StateManager)
+
+local PlayerService = {}
+
+function PlayerService:Start()
+	Players.PlayerAdded:Connect(function(plr)
+		State:InitPlayer(plr)
+	end)
+	for _, plr in ipairs(Players:GetPlayers()) do
+		State:InitPlayer(plr)
+	end
+end
+
+return PlayerService  -  Edit
+  20:22:32.082  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.082    -  Edit
+  20:22:32.082  ===SCRIPT===
+PATH:ServerScriptService/Services/DashService
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.082  local RS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local Constants = require(RS.Shared.Modules.Constants)
+local State = require(RS.Shared.Modules.StateManager)
+local StaminaService = require(script.Parent.StaminaService)
+
+local RE_Dash = RS:WaitForChild("Remotes"):WaitForChild("Events"):WaitForChild("RE_RequestDash")
+local RE_DashOK = RS:WaitForChild("Remotes"):WaitForChild("Events"):WaitForChild("RE_DashOK")
+
+local DEBUG = false
+
+local DashService = {
+	_cooldowns = {} -- [player] = lastDashTime
+}
+
+local function getChar(player)
+	local char = player.Character
+	if not char then return end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if root and hum and hum.Health > 0 then
+		return char, root, hum
+	end
+end
+
+function DashService:_canDash(player)
+	local now = os.clock()
+	if (now - (self._cooldowns[player] or 0)) < Constants.Dash.Cooldown then
+		return false, "cooldown"
+	end
+	local sta = State:GetResource(player, "sta") or 0
+	if sta < Constants.Dash.Cost then
+		return false, "no_stamina"
+	end
+	if State:HasTag(player, Constants.Status.Stun) then
+		return false, "stunned"
+	end
+	return true
+end
+
+-- Поворачиваемся только при фронт-дэше
+local function shouldRotate(dirName: string?)
+	return dirName == "front"
+end
+
+function DashService:_applyForce(root, hum, dir, dirName)
+	-- убрать предыдущий рывок
+	local old = root:FindFirstChild("DashBV")
+	if old then old:Destroy() end
+
+	local bv = Instance.new("BodyVelocity")
+	bv.Name = "DashBV"
+	bv.MaxForce = Vector3.new(1e9, 0, 1e9) -- толчок по XZ
+	bv.P = 1e5
+	bv.Velocity = dir * Constants.Dash.Speed
+	bv.Parent = root
+
+	-- Поворот только для фронт-даша
+	if shouldRotate(dirName) and dir.Magnitude > 0.001 then
+		root.CFrame = CFrame.lookAt(root.Position, root.Position + dir)
+	end
+
+	hum.AutoRotate = false
+	task.delay(Constants.Dash.Duration, function()
+		if bv and bv.Parent then bv:Destroy() end
+		if hum and hum.Parent then hum.AutoRotate = true end
+	end)
+end
+
+function DashService:Start()
+	RE_Dash.OnServerEvent:Connect(function(player, dir, dirName)
+		if typeof(dir) ~= "Vector3" then return end
+		dir = Vector3.new(dir.X, 0, dir.Z)
+		if dir.Magnitude < 1e-3 then return end
+		dir = dir.Unit
+		if dirName and typeof(dirName) ~= "string" then dirName = nil end
+		dirName = dirName or "front"
+
+		local _, root, hum = getChar(player)
+		if not root then
+			if DEBUG then print("[DashService] No root for", player.Name) end
+			return
+		end
+
+		local can, reason = self:_canDash(player)
+		if not can then
+			if DEBUG then print("[DashService] Dash blocked:", reason, "for", player.Name) end
+			return
+		end
+
+		-- трата стамины + задержка регена + i-frames + импульс
+		local sta = State:GetResource(player, "sta") or 0
+		State:SetResource(player, "sta", math.max(0, sta - Constants.Dash.Cost))
+		StaminaService:MarkSpend(player)
+		State:AddTag(player, Constants.Status.IFrame, Constants.Dash.IFrame)
+
+		self:_applyForce(root, hum, dir, dirName)
+		self._cooldowns[player] = os.clock()
+
+		-- подтверждение успешного даша → клиент проигрывает анимацию
+		RE_DashOK:FireClient(player, dirName)
+
+		if DEBUG then
+			print(string.format("[DashService] Dash OK: %s (%.2f, %.2f, %.2f) for %s", dirName, dir.X, dir.Y, dir.Z, player.Name))
+		end
+	end)
+
+	Players.PlayerRemoving:Connect(function(plr)
+		self._cooldowns[plr] = nil
+	end)
+
+	print("[Server] DashService ready")
+end
+
+return DashService  -  Edit
+  20:22:32.082  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.082    -  Edit
+  20:22:32.082  ===SCRIPT===
+PATH:ServerScriptService/Services/StaminaService
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.082  local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+
+local State = require(RS.Shared.Modules.StateManager)
+local Constants = require(RS.Shared.Modules.Constants)
+
+local StaminaService = { _lastSpend = {} }
+
+function StaminaService:MarkSpend(player)
+	self._lastSpend[player] = os.clock()
+end
+
+function StaminaService:Start()
+	task.spawn(function()
+		while true do
+			task.wait(0.1)
+			local now = os.clock()
+			for _, plr in ipairs(Players:GetPlayers()) do
+				local s = State:Get(plr)
+				if s then
+					local sta = s.sta or 0
+					if sta < Constants.Resources.MaxSTA then
+						-- стоп регена во время GuardBreak
+						if State:HasTag(plr, Constants.Status.GuardBreak) then
+							-- no regen
+						else
+							local last = self._lastSpend[plr] or 0
+							if (now - last) >= Constants.Resources.StaRegenDelay then
+								sta = math.min(Constants.Resources.MaxSTA, sta + Constants.Resources.StaRegenPerSec * 0.1)
+								State:SetResource(plr, "sta", sta)
+							end
+						end
+					end
+				end
+			end
+		end
+	end)
+
+	Players.PlayerRemoving:Connect(function(plr)
+		self._lastSpend[plr] = nil
+	end)
+
+	print("[Server] StaminaService ready")
+end
+
+return StaminaService  -  Edit
+  20:22:32.082  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.082    -  Edit
+  20:22:32.082  ===SCRIPT===
+PATH:ServerScriptService/Services/StateSyncService
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.083  local RS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local State = require(RS.Shared.Modules.StateManager)
+
+local RE_StateUpdate = RS:WaitForChild("Remotes"):WaitForChild("Events"):WaitForChild("RE_StateUpdate")
+local RF_GetInitialState = RS:WaitForChild("Remotes"):WaitForChild("Functions"):WaitForChild("RF_GetInitialState")
+
+local StateSyncService = {}
+
+local connections = {} -- [player] = RBXScriptConnection
+
+local function attach(player)
+	local s = State:Get(player)
+	if connections[player] then
+		connections[player]:Disconnect()
+		connections[player] = nil
+	end
+	connections[player] = s.changed.Event:Connect(function(evt, key, value)
+		-- evt = "res" | "tag"
+		RE_StateUpdate:FireClient(player, evt, key, value)
+	end)
+end
+
+function StateSyncService:Start()
+	Players.PlayerAdded:Connect(function(plr)
+		attach(plr)
+	end)
+	for _, plr in ipairs(Players:GetPlayers()) do
+		attach(plr)
+	end
+
+	Players.PlayerRemoving:Connect(function(plr)
+		local c = connections[plr]
+		if c then c:Disconnect() end
+		connections[plr] = nil
+	end)
+
+	RF_GetInitialState.OnServerInvoke = function(player)
+		local s = State:Get(player)
+		return {
+			hp = s.hp,
+			sta = s.sta,
+			ult = s.ult,
+			tags = s.tags
+		}
+	end
+
+	print("[Server] StateSyncService ready")
+end
+
+return StateSyncService  -  Edit
+  20:22:32.083  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.083    -  Edit
+  20:22:32.083  ===SCRIPT===
+PATH:ServerScriptService/Services/MeleeService
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.083  local RS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local Constants         = require(RS.Shared.Modules.Constants)
+local State             = require(RS.Shared.Modules.StateManager)
+local CombatService     = require(script.Parent.CombatService)
+local VFXService        = require(script.Parent.VFXService)
+local HitboxPartService = require(script.Parent.HitboxPartService)
+local UltService        = require(script.Parent.UltService)
+local BlockService      = require(script.Parent.BlockService)
+
+local Events       = RS:WaitForChild("Remotes"):WaitForChild("Events")
+local RE_M1Request = Events:WaitForChild("RE_M1Request")
+local RE_M1Ack     = Events:WaitForChild("RE_M1Ack")
+local RE_M1DoHit   = Events:WaitForChild("RE_M1DoHit")
+local RE_M1Impact  = Events:WaitForChild("RE_M1Impact")
+
+local MeleeService = {
+	_combo = {},
+	_seriesLockout = {},
+	_pendingHit = {},
+}
+
+local function getChar(player)
+	local char = player.Character
+	if not char then return end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	local hum  = char:FindFirstChildOfClass("Humanoid")
+	if root and hum and hum.Health > 0 then return char, root, hum end
+end
+
+local function applyKnockbackFromTo(attackerRoot, targetModel, isLaunch)
+	local tRoot = targetModel:FindFirstChild("HumanoidRootPart") or targetModel.PrimaryPart
+	local hum   = targetModel:FindFirstChildOfClass("Humanoid")
+	if not tRoot or not hum then return end
+	local dir = (tRoot.Position - attackerRoot.Position)
+	dir = Vector3.new(dir.X, 0, dir.Z)
+	if dir.Magnitude < 1e-3 then return end
+	dir = dir.Unit
+	local planar = dir * Constants.Melee.Knockback
+	local vel = tRoot.AssemblyLinearVelocity
+	local y = vel.Y
+	if isLaunch then y = Constants.Melee.LaunchUp end
+	tRoot.AssemblyLinearVelocity = Vector3.new(planar.X, y, planar.Z)
+end
+
+local function applyMissSlow(attacker)
+	local _, _, hum = getChar(attacker)
+	if not hum then return end
+	State:AddTag(attacker, Constants.Status.Slow, Constants.Melee.MissFourthSlowDuration)
+end
+
+function MeleeService:_canAttack(player)
+	if State:HasTag(player, Constants.Status.Stun) or State:HasTag(player, Constants.Status.GuardBreak) then return false end
+	if BlockService:IsBlocking(player) then return false end
+	local now = os.clock()
+	local lockEnd = self._seriesLockout[player]
+	if lockEnd and now < lockEnd then return false end
+	local c = self._combo[player]
+	if c and (now - (c.last or 0)) < (Constants.Melee.AttackInterval or 0.5) then return false end
+	if c and (now - (c.last or 0)) < (Constants.Melee.StepCooldown or 0.12) then return false end
+	return true
+end
+
+function MeleeService:_nextStep(player)
+	local now = os.clock()
+	local c = self._combo[player] or { step = 0, last = 0 }
+	if (now - (c.last or 0)) <= Constants.Melee.ComboWindow then
+		c.step = c.step + 1
+		if c.step > Constants.Melee.ComboHits then c.step = 1 end
+	else
+		c.step = 1
+	end
+	c.last = now
+	self._combo[player] = c
+	return c.step
+end
+
+function MeleeService:_startSeriesLock(player)
+	self._seriesLockout[player] = os.clock() + (Constants.Melee.SeriesLockout or 1.0)
+end
+
+function MeleeService:_resetCombo(player)
+	self._combo[player] = { step = 0, last = 0 }
+end
+
+RE_M1Request.OnServerEvent:Connect(function(player, _)
+	local char, root = getChar(player)
+	if not root then return end
+	if not MeleeService:_canAttack(player) then return end
+
+	local step = MeleeService:_nextStep(player)
+	local isLaunch = (step == Constants.Melee.ComboHits)
+	if isLaunch then MeleeService:_startSeriesLock(player) end
+
+	MeleeService._pendingHit[player] = {
+		step = step,
+		expires = os.clock() + (Constants.Melee.HitConfirmMaxDelay or 0.6),
+		consumed = false,
+	}
+
+	RE_M1Ack:FireClient(player, {
+		step = step,
+		animName = ("M1_%d"):format(step),
+		hitCount = 0, landed = 0, isLaunch = isLaunch
+	})
+end)
+
+RE_M1DoHit.OnServerEvent:Connect(function(player, stepFromClient)
+	local pending = MeleeService._pendingHit[player]
+	if not pending or pending.consumed then return end
+	if stepFromClient ~= pending.step then return end
+	if os.clock() > (pending.expires or 0) then return end
+
+	local char, root = getChar(player)
+	if not root then return end
+
+	local step = pending.step
+	local dmg = Constants.Melee.Damage[step] or 1
+	local isLaunch = (step == Constants.Melee.ComboHits)
+
+	local targets = HitboxPartService:Query(player, root.CFrame, {
+		size    = Constants.Melee.HitboxSize,
+		offset  = Constants.Melee.HitboxOffset,
+		yOffset = Constants.Melee.HitboxYOffset,
+		backPad = Constants.Melee.HitboxBackPad,
+		exclude = { char },
+		debug   = Constants.Melee.HitboxDebug,
+		debugLife= Constants.Melee.HitboxDebugLife,
+	})
+
+	local landed = 0
+	local firstTargetRoot = nil
+
+	for _, t in ipairs(targets) do
+		if t.player then
+			local eval = BlockService:EvaluateHit(player, t.player, root, t.root)
+			if eval.type == "parry" then
+				-- парри: станим атакующего (короткий)
+				State:AddTag(player, Constants.Status.Stun, eval.attackerStun or 0.4)
+			elseif eval.type == "block" then
+				-- урон 0; если это 4-й удар — жёстко наказываем атакующего (3с)
+				if isLaunch then
+					BlockService:HardStun(player, Constants.Block.HeavyBlockStun or 3.0)
+				end
+			elseif eval.type == "backhit" then
+				CombatService:ApplyDamageToPlayer(player, t.player, dmg)
+				applyKnockbackFromTo(root, t.model, isLaunch)
+				BlockService:GuardBreak(t.player)
+				landed += 1
+				firstTargetRoot = firstTargetRoot or t.root
+			else
+				CombatService:ApplyDamageToPlayer(player, t.player, dmg)
+				State:AddTag(t.player, Constants.Status.Stun, Constants.Melee.Hitstun)
+				applyKnockbackFromTo(root, t.model, isLaunch)
+				landed += 1
+				firstTargetRoot = firstTargetRoot or t.root
+			end
+		else
+			CombatService:ApplyDamageToHumanoid(player, t.humanoid, dmg)
+			applyKnockbackFromTo(root, t.model, isLaunch)
+			landed += 1
+			firstTargetRoot = firstTargetRoot or t.root
+		end
+	end
+
+	-- уведомление о хитстопе/шэйке
+	RE_M1Impact:FireClient(player, {
+		landed = landed,
+		step   = step,
+		intensity = (step >= 3) and (Constants.Melee.HitFX.ShakeHeavy or 1.2)
+			or (Constants.Melee.HitFX.ShakeBase  or 0.8),
+		duration  = Constants.Melee.HitFX.Duration or 0.06
+	})
+
+	if isLaunch and landed == 0 then
+		applyMissSlow(player)
+	end
+
+	-- магнит (как было)
+	if landed > 0 and step >= 3 and Constants.Melee.Magnet.Enabled and firstTargetRoot then
+		local dir = (firstTargetRoot.Position - root.Position)
+		dir = Vector3.new(dir.X, 0, dir.Z)
+		local dist = dir.Magnitude
+		if dist > 1e-3 then
+			dir = dir.Unit
+			local forward = root.CFrame.LookVector
+			local dot = forward.X * dir.X + forward.Z * dir.Z
+			if dist >= (Constants.Melee.Magnet.MinDist or 3)
+				and dist <= (Constants.Melee.Magnet.MaxDist or 12)
+				and dot >= (Constants.Melee.Magnet.ForwardDot or 0.2) then
+				root.AssemblyLinearVelocity = root.AssemblyLinearVelocity + dir * (Constants.Melee.Magnet.Boost or 20)
+			end
+		end
+	end
+
+	-- ульта (как было)
+	if landed > 0 then
+		local perHit = (Constants.Melee.UltGainPerHit or 2)
+		if UltService:IsActive(player) then
+			perHit = (Constants.Ult.GainsDuringUltPerHit or 0.5)
+		end
+		local add = perHit * landed
+		if add > 0 then
+			local cur = State:GetResource(player, "ult") or 0
+			local max = Constants.Resources.MaxULT or 100
+			State:SetResource(player, "ult", math.min(max, cur + add))
+		end
+	end
+
+	pending.consumed = true
+	MeleeService._pendingHit[player] = nil
+	if isLaunch then MeleeService:_resetCombo(player) end
+end)
+
+Players.PlayerRemoving:Connect(function(plr)
+	MeleeService._combo[plr] = nil
+	MeleeService._seriesLockout[plr] = nil
+	MeleeService._pendingHit[plr] = nil
+end)
+
+print("[Server] MeleeService ready")
+return MeleeService  -  Edit
+  20:22:32.083  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.083    -  Edit
+  20:22:32.083  ===SCRIPT===
+PATH:ServerScriptService/Services/VFXService
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.083  local RS        = game:GetService("ReplicatedStorage")
+local Debris    = game:GetService("Debris")
+local Workspace = game:GetService("Workspace")
+local RunService= game:GetService("RunService")
+
+local VFXService = {
+	_lastOnModel = {} -- [Model] = lastTime (anti-spam)
+}
+
+local function getVFXFolder()
+	local assets = RS:FindFirstChild("Assets")
+	if not assets then return nil end
+	return assets:FindFirstChild("VFX")
+end
+
+local function startEmitters(container, emitCount)
+	for _, d in ipairs(container:GetDescendants()) do
+		if d:IsA("ParticleEmitter") then
+			if emitCount and emitCount > 0 then
+				local oldRate = d.Rate
+				d.Rate = 0
+				d.Enabled = true
+				pcall(function() d:Emit(emitCount) end)
+				d.Rate = oldRate
+			else
+				d.Enabled = true
+			end
+		end
+	end
+end
+
+-- БАЗОВЫЙ спавн на части
+function VFXService:PlayOnPart(part, vfxName, opts)
+	if not part or not part:IsA("BasePart") then return end
+	local vfxFolder = getVFXFolder()
+	if not vfxFolder then warn("[VFX] Assets/VFX not found"); return end
+	local template = vfxFolder:FindFirstChild(vfxName)
+	if not template then warn("[VFX] prefab not found:", vfxName); return end
+
+	opts = opts or {}
+	local life = opts.duration or 1.0
+	local emitCount = opts.emitCount
+	local cleanup = {}
+
+	if template:IsA("Attachment") then
+		local att = template:Clone()
+		att.Parent = part
+		startEmitters(att, emitCount)
+		table.insert(cleanup, att)
+	elseif template:IsA("ParticleEmitter") then
+		local att = Instance.new("Attachment")
+		att.Name = "VFXAttach"
+		att.Parent = part
+		local pe = template:Clone()
+		pe.Parent = att
+		startEmitters(att, emitCount)
+		table.insert(cleanup, att)
+	elseif template:IsA("Folder") or template:IsA("Model") then
+		local att = Instance.new("Attachment")
+		att.Name = "VFXAttach"
+		att.Parent = part
+		for _, d in ipairs(template:GetDescendants()) do
+			if d:IsA("ParticleEmitter") then
+				local pe = d:Clone()
+				pe.Parent = att
+			end
+		end
+		startEmitters(att, emitCount)
+		table.insert(cleanup, att)
+	elseif template:IsA("BasePart") then
+		local p = template:Clone()
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanQuery = false
+		p.CanTouch = false
+		p.CFrame = part.CFrame
+		p.Parent = Workspace
+		startEmitters(p, emitCount)
+		table.insert(cleanup, p)
+	else
+		local node = template:Clone()
+		node.Parent = part
+		startEmitters(node, emitCount)
+		table.insert(cleanup, node)
+	end
+
+	for _, inst in ipairs(cleanup) do
+		Debris:AddItem(inst, life)
+	end
+end
+
+-- Raycast вниз для коррекции над землёй
+local function snapAboveGround(pos, minAbove, ignore)
+	local origin = pos + Vector3.new(0, 8, 0)
+	local dir    = Vector3.new(0, -40, 0)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = ignore or {}
+	local result = Workspace:Raycast(origin, dir, params)
+	if result then
+		local groundY = result.Position.Y
+		local desiredY = math.max(pos.Y, groundY + (minAbove or 0.5))
+		return Vector3.new(pos.X, desiredY, pos.Z)
+	end
+	return pos
+end
+
+-- Сперва к голове, затем фиксируем в мире (не едет за головой)
+local function playAtHeadLockWorld(model, vfxName, opts)
+	local head = model:FindFirstChild("Head")
+	if not head then return end
+
+	local vfxFolder = getVFXFolder()
+	if not vfxFolder then return end
+	local template = vfxFolder:FindFirstChild(vfxName)
+	if not template then return end
+
+	opts = opts or {}
+	local life       = opts.duration or 0.6
+	local emitCount  = opts.emitCount
+	local headYOffset= opts.headYOffset or 0.2
+	local forwardOff = opts.forwardOffset or 2.5
+	local minAbove   = opts.minAboveGround or 0.5
+
+	-- 1) Attachment на голове
+	local headAtt = Instance.new("Attachment")
+	headAtt.Name = "VFXHeadTemp"
+	headAtt.Parent = head
+
+	-- Сдвинем локально по Y и вперёд (через ориентир HRP/Head LookVector)
+	local hrp = model:FindFirstChild("HumanoidRootPart")
+	local forward = (hrp and hrp.CFrame.LookVector) or head.CFrame.LookVector
+	forward = Vector3.new(forward.X, 0, forward.Z)
+	if forward.Magnitude < 1e-3 then forward = Vector3.new(0,0,-1) end
+	forward = forward.Unit
+
+	-- локальная позиция приблизим к нужной точке: используем WorldCFrame после
+	-- Клонируем ParticleEmitter'ы в этот Attachment
+	local peCount = 0
+	for _, d in ipairs(template:GetDescendants()) do
+		if d:IsA("ParticleEmitter") then
+			local pe = d:Clone()
+			pe.Parent = headAtt
+			peCount += 1
+		end
+	end
+	if peCount == 0 then
+		-- если в корне Attachment/ParticleEmitter
+		if template:IsA("ParticleEmitter") then
+			local pe = template:Clone()
+			pe.Parent = headAtt
+			peCount = 1
+		end
+	end
+	if peCount == 0 then
+		-- нет эмиттеров — рисуем debug‑точку и выходим
+		if opts.debugVisual then
+			local dot = Instance.new("Part")
+			dot.Anchored = true
+			dot.CanCollide = false
+			dot.CanQuery = false
+			dot.CanTouch = false
+			dot.Material = Enum.Material.Neon
+			dot.Shape = Enum.PartType.Ball
+			dot.Color = Color3.fromRGB(255,0,0)
+			dot.Size = Vector3.new(0.35,0.35,0.35)
+			dot.CFrame = head.CFrame
+			dot.Parent = Workspace
+			Debris:AddItem(dot, life)
+		end
+		headAtt:Destroy()
+		return
+	end
+
+	-- 2) Запускаем эмиссию на голове (частицы уйдут в мир)
+	startEmitters(headAtt, emitCount)
+
+	-- 3) На следующем кадре фиксируем позицию в мире и переподвешиваем эмиттеры
+	task.defer(function()
+		if not headAtt.Parent then return end
+
+		local worldCF = headAtt.WorldCFrame
+		-- Применим оффсет вверх и вперёд в мировых координатах
+		local up      = Vector3.new(0,1,0)
+		local pos     = worldCF.Position + up * headYOffset + forward * forwardOff
+		pos           = snapAboveGround(pos, minAbove, { model })
+
+		-- Якорь
+		local anchor = Instance.new("Part")
+		anchor.Name = "VFX_HeadLockWorld"
+		anchor.Anchored = true
+		anchor.CanCollide = false
+		anchor.CanQuery = false
+		anchor.CanTouch = false
+		anchor.Transparency = 1
+		anchor.Size = Vector3.new(0.2, 0.2, 0.2)
+		anchor.CFrame = CFrame.lookAt(pos, pos + forward)
+		anchor.Parent = Workspace
+
+		if opts.debugVisual then
+			local dot = Instance.new("Part")
+			dot.Anchored = true
+			dot.CanCollide = false
+			dot.CanQuery = false
+			dot.CanTouch = false
+			dot.Material = Enum.Material.Neon
+			dot.Shape = Enum.PartType.Ball
+			dot.Color = Color3.fromRGB(0,255,140)
+			dot.Size = Vector3.new(0.35,0.35,0.35)
+			dot.CFrame = anchor.CFrame
+			dot.Parent = Workspace
+			Debris:AddItem(dot, life)
+		end
+
+		local anchorAtt = Instance.new("Attachment")
+		anchorAtt.Name = "VFXAttach"
+		anchorAtt.Parent = anchor
+
+		-- перенесём эмиттеры с headAtt на anchorAtt
+		local toMove = {}
+		for _, ch in ipairs(headAtt:GetChildren()) do
+			if ch:IsA("ParticleEmitter") then
+				table.insert(toMove, ch)
+			end
+		end
+		for _, pe in ipairs(toMove) do
+			pe.Parent = anchorAtt
+		end
+
+		Debris:AddItem(anchor, life)
+		-- подчистим временный attachment на голове (эмиттеры уже перемещены)
+		headAtt:Destroy()
+	end)
+end
+
+function VFXService:PlayOnCharacter(model, vfxName, opts)
+	if not model or not model:IsA("Model") then return end
+	opts = opts or {}
+
+	-- throttle
+	if (opts.throttle or 0) > 0 then
+		local now = os.clock()
+		local last = self._lastOnModel[model]
+		if last and (now - last) < opts.throttle then
+			return
+		end
+		self._lastOnModel[model] = now
+	end
+
+	-- режим: сперва к голове → затем фикс в мире
+	if opts.attach == "head_lockworld" then
+		playAtHeadLockWorld(model, vfxName, opts)
+		return
+	end
+
+	-- fallback: руки
+	if opts.attach == "hands" then
+		local rh = model:FindFirstChild("RightHand") or model:FindFirstChild("Right Arm")
+		local lh = model:FindFirstChild("LeftHand")  or mode  -  Edit
+  20:22:32.083  l:FindFirstChild("Left Arm")
+		if rh then self:PlayOnPart(rh, vfxName, opts) end
+		if lh then self:PlayOnPart(lh, vfxName, opts) end
+		if rh or lh then return end
+	end
+
+	-- старый режим: точка в мире перед головой (если попросишь)
+	if opts.attach == "head_forward" then
+		-- используем head_lockworld с forwardOffset и маленьким headYOffset=0
+		playAtHeadLockWorld(model, vfxName, {
+			duration      = opts.duration,
+			emitCount     = opts.emitCount,
+			throttle      = opts.throttle,
+			forwardOffset = opts.forwardOffset or 2.5,
+			headYOffset   = opts.headYOffset or 0,
+			minAboveGround= opts.minAboveGround or 0.5,
+			debugVisual   = opts.debugVisual,
+		})
+		return
+	end
+
+	-- по умолчанию — HRP/торс
+	local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso") or model.PrimaryPart
+	if not root then return end
+	self:PlayOnPart(root, vfxName, opts)
+end
+
+return VFXService  -  Edit
+  20:22:32.083  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.083    -  Edit
+  20:22:32.083  ===SCRIPT===
+PATH:ServerScriptService/Services/HitboxPartService
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.083  local Workspace = game:GetService("Workspace")
+local Debris    = game:GetService("Debris")
+local Players   = game:GetService("Players")
+
+local HitboxPartService = {
+	_pool = {},   -- [key(Player|Model)] = Part
+	_folder = nil,
+}
+
+local function ensureFolder()
+	if HitboxPartService._folder and HitboxPartService._folder.Parent then return HitboxPartService._folder end
+	local f = Instance.new("Folder")
+	f.Name = "Hitboxes"
+	f.Parent = Workspace
+	HitboxPartService._folder = f
+	return f
+end
+
+local function createHitboxPart()
+	local p = Instance.new("Part")
+	p.Name = "Hitbox"
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = true
+	p.CanTouch = false
+	p.Massless = true
+	p.Material = Enum.Material.ForceField
+	p.Transparency = 1
+	return p
+end
+
+local function keyOf(obj) return obj end
+
+function HitboxPartService:GetPartFor(key)
+	ensureFolder()
+	key = keyOf(key)
+	local p = self._pool[key]
+	if p and p.Parent then return p end
+	p = createHitboxPart()
+	p.Parent = self._folder
+	self._pool[key] = p
+	return p
+end
+
+function HitboxPartService:Query(key, rootCF: CFrame, opts)
+	opts = opts or {}
+	local size    = opts.size or Vector3.new(4,4,5)
+	local offset  = opts.offset or 2.5
+	local yOffset = opts.yOffset or 0
+	local backPad = opts.backPad or 0
+	local exclude = opts.exclude or {}
+	local debug   = opts.debug
+	local dbgLife = opts.debugLife or 0.1
+
+	local part = self:GetPartFor(key)
+	part.Size = size
+	local centerCF = rootCF * CFrame.new(0, yOffset, - (offset + size.Z*0.5 - backPad))
+	part.CFrame = centerCF
+	part.Transparency = 1
+	part.Color = Color3.fromRGB(0,255,140)
+
+	local params = OverlapParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = exclude
+
+	local ok, res = pcall(function()
+		return Workspace:GetPartsInPart(part, params)
+	end)
+	local parts = (ok and res) or {}
+
+	local seen, found = {}, {}
+	for _, prt in ipairs(parts) do
+		local model = prt:FindFirstAncestorOfClass("Model")
+		if model and not seen[model] then
+			local hum = model:FindFirstChildOfClass("Humanoid")
+			local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+			if hum and root and hum.Health > 0 then
+				seen[model] = true
+				table.insert(found, {
+					model = model,
+					humanoid = hum,
+					player = Players:GetPlayerFromCharacter(model),
+					root = root
+				})
+			end
+		end
+	end
+
+	if debug then
+		ensureFolder()
+		local ghost = Instance.new("Part")
+		ghost.Name = "Hitbox_Ghost"
+		ghost.Anchored = true
+		ghost.CanCollide = false
+		ghost.CanQuery = false
+		ghost.CanTouch = false
+		ghost.Material = Enum.Material.Neon
+		ghost.Color = Color3.fromRGB(0, 255, 140)
+		ghost.Transparency = 0.7
+		ghost.Size = size
+		ghost.CFrame = centerCF
+		ghost.Parent = self._folder
+		Debris:AddItem(ghost, dbgLife)
+	end
+
+	return found
+end
+
+function HitboxPartService:RemoveKey(key)
+	local p = self._pool[key]
+	if p then p:Destroy() self._pool[key] = nil end
+end
+
+return HitboxPartService  -  Edit
+  20:22:32.083  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.083    -  Edit
+  20:22:32.083  ===SCRIPT===
+PATH:ServerScriptService/Services/UltService
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.083  local Players = game:GetService("Players")
+local RS      = game:GetService("ReplicatedStorage")
+
+local Constants   = require(RS.Shared.Modules.Constants)
+local State       = require(RS.Shared.Modules.StateManager)
+
+local Events = RS:WaitForChild("Remotes"):WaitForChild("Events")
+local RE_UltRequest = Events:WaitForChild("RE_UltRequest")
+local RE_UltAck     = Events:WaitForChild("RE_UltAck")
+
+local PrivatePlus
+pcall(function() PrivatePlus = require(game.ServerScriptService.Services.PrivatePlusService) end)
+
+local UltService = { _drainThreads = {}, _active = {}, _prevMove = {} }
+
+function UltService:IsActive(player) return self._active[player] == true end
+
+local function getChar(player)
+	local char = player.Character
+	if not char then return end
+	local root = char:FindFirstChild("HumanoidRootPart")
+	local hum  = char:FindFirstChildOfClass("Humanoid")
+	if root and hum and hum.Health > 0 then return char, root, hum end
+end
+
+local function lockMovement(player, hum, lock)
+	if not hum then return end
+	if lock then
+		UltService._prevMove[player] = UltService._prevMove[player] or { ws=hum.WalkSpeed, jp=hum.JumpPower, ar=hum.AutoRotate }
+		hum.WalkSpeed = 0; hum.JumpPower = 0; hum.AutoRotate = false
+	else
+		local prev = UltService._prevMove[player]
+		if prev then
+			hum.WalkSpeed = prev.ws or 16
+			hum.JumpPower = prev.jp or 50
+			hum.AutoRotate = (prev.ar~=nil) and prev.ar or true
+		end
+		UltService._prevMove[player] = nil
+	end
+end
+
+local function isInfiniteUlt(player)
+	if not PrivatePlus then return false end
+	if PrivatePlus.GetEffectiveFlag then return PrivatePlus:GetEffectiveFlag(player, "InfiniteUlt") == true end
+	if PrivatePlus.IsFlagActive then return PrivatePlus:IsFlagActive("InfiniteUlt") == true end
+	return false
+end
+
+local function endUlt(player)
+	RE_UltAck:FireClient(player, { phase = "end" })
+	UltService._active[player] = nil
+end
+
+local function startDrain(player)
+	if UltService._drainThreads[player] then return end
+	UltService._drainThreads[player] = true
+
+	if isInfiniteUlt(player) then
+		RE_UltAck:FireClient(player, { phase = "active" })
+		UltService._drainThreads[player] = nil
+		return
+	end
+
+	task.spawn(function()
+		RE_UltAck:FireClient(player, { phase = "active" })
+		local last = os.clock()
+		while UltService._drainThreads[player] do
+			local now = os.clock()
+			local dt = now - last
+			last = now
+			local cur = State:GetResource(player, "ult") or 0
+			if cur <= 0 then break end
+			local rate = Constants.Ult.DrainPerSec or 25
+			local new = math.max(0, cur - rate * dt)
+			if math.abs(new - cur) > 1e-3 then State:SetResource(player, "ult", new) end
+			if new <= 0 then break end
+			task.wait(0.05)
+		end
+		UltService._drainThreads[player] = nil
+		endUlt(player)
+	end)
+end
+
+function UltService:Start()
+	RE_UltRequest.OnServerEvent:Connect(function(player)
+		if UltService._active[player] then return end
+
+		-- нельзя ультовать в стане/guard break
+		if State:HasTag(player, Constants.Status.Stun) or State:HasTag(player, Constants.Status.GuardBreak) then
+			RE_UltAck:FireClient(player, { phase = "reject", reason = "stunned" })
+			return
+		end
+
+		local char, _, hum = getChar(player); if not hum then return end
+		local curUlt = State:GetResource(player, "ult") or 0
+		local maxUlt = Constants.Resources.MaxULT or 100
+		if Constants.Ult.RequireFull then
+			if curUlt < maxUlt - 1e-3 then
+				RE_UltAck:FireClient(player, { phase = "reject", reason = "not_full" })
+				return
+			end
+		else
+			if curUlt < 1 then
+				RE_UltAck:FireClient(player, { phase = "reject", reason = "not_enough" })
+				return
+			end
+		end
+
+		UltService._active[player] = true
+		State:SetResource(player, "hp", Constants.Resources.MaxHP or 100)
+
+		local animDur = Constants.Ult.AnimDuration or 2.0
+		if Constants.Ult.LockMovementDuringAnim then lockMovement(player, hum, true) end
+		State:AddTag(player, Constants.Status.Stun, animDur + 0.05)
+
+		RE_UltAck:FireClient(player, { phase = "begin", animName = Constants.Ult.AnimName or "Awakening", duration = animDur })
+		task.delay(animDur, function()
+			local _, _, hum2 = getChar(player); if hum2 then lockMovement(player, hum2, false) end
+			startDrain(player)
+		end)
+	end)
+
+	Players.PlayerRemoving:Connect(function(plr)
+		UltService._drainThreads[plr] = nil
+		UltService._active[plr] = nil
+		UltService._prevMove[plr] = nil
+	end)
+
+	Players.PlayerAdded:Connect(function(plr)
+		plr.CharacterAdded:Connect(function()
+			UltService._prevMove[plr] = nil
+		end)
+	end)
+
+	print("[Server] UltService ready")
+end
+
+return UltService  -  Edit
+  20:22:32.084  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.084    -  Edit
+  20:22:32.084  ===SCRIPT===
+PATH:ServerScriptService/Services/BlockService
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.084  local RS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+
+local Constants = require(RS.Shared.Modules.Constants)
+local State     = require(RS.Shared.Modules.StateManager)
+local VFX       = require(script.Parent.VFXService)
+
+local Events = RS:WaitForChild("Remotes"):WaitForChild("Events")
+local RE_SetBlocking = Events:WaitForChild("RE_SetBlocking")
+local RE_BlockAck    = Events:WaitForChild("RE_BlockAck")
+local RE_ParryState  = Events:WaitForChild("RE_ParryState")
+
+local BlockService = {
+	_state   = {}, -- [player] = { blocking=true, started=os.clock(), prevWS }
+	_prevMove= {}, -- кэш движения для жёстких локов
+	_parryCd = {}, -- [player] = nextReadyAt (os.clock())
+}
+
+local function now() return os.clock() end
+
+local function getHum(player)
+	if not player then return end
+	local char = player.Character
+	if not char then return end
+	return char:FindFirstChildOfClass("Humanoid")
+end
+
+local function lockMove(player, lock)
+	local hum = getHum(player)
+	if not hum then return end
+	if lock then
+		BlockService._prevMove[player] = BlockService._prevMove[player] or { ws=hum.WalkSpeed, jp=hum.JumpPower, ar=hum.AutoRotate }
+		hum.WalkSpeed = 0; hum.JumpPower = 0; hum.AutoRotate = false
+	else
+		local prev = BlockService._prevMove[player]
+		if prev then
+			hum.WalkSpeed = prev.ws or 16
+			hum.JumpPower = prev.jp or 50
+			hum.AutoRotate = (prev.ar~=nil) and prev.ar or true
+		end
+		BlockService._prevMove[player] = nil
+	end
+end
+
+function BlockService:HardStun(attackerPlayer, duration)
+	if not attackerPlayer then return end
+	lockMove(attackerPlayer, true)
+	State:AddTag(attackerPlayer, Constants.Status.Stun, duration or 0.4)
+	task.delay(duration or 0.4, function()
+		lockMove(attackerPlayer, false)
+	end)
+end
+
+function BlockService:IsBlocking(player)
+	local s = self._state[player]
+	return s and s.blocking == true
+end
+
+function BlockService:_start(player)
+	local hum = getHum(player)
+	self._state[player] = { blocking = true, started = now(), prevWS = hum and hum.WalkSpeed or nil }
+	if hum then
+		local mult = Constants.Block.SpeedMultiplier or 0.5
+		hum.WalkSpeed = math.max(2, (self._state[player].prevWS or 16) * mult)
+	end
+	return true
+end
+
+function BlockService:_stop(player)
+	local s = self._state[player]
+	if s then
+		local hum = getHum(player)
+		if hum and s.prevWS then hum.WalkSpeed = s.prevWS end
+		s.blocking = false
+	end
+end
+
+function BlockService:SetBlocking(player, enabled)
+	if enabled then
+		local ok = self:_start(player)
+		RE_BlockAck:FireClient(player, ok)
+	else
+		self:_stop(player)
+		RE_BlockAck:FireClient(player, false)
+	end
+end
+
+function BlockService:GuardBreak(targetPlayer)
+	self:_stop(targetPlayer)
+	RE_BlockAck:FireClient(targetPlayer, false)
+	local dur = Constants.Block.HeavyBlockStun or 0.4
+	State:AddTag(targetPlayer, Constants.Status.Stun,       dur)
+	State:AddTag(targetPlayer, Constants.Status.GuardBreak, dur)
+	lockMove(targetPlayer, true)
+	task.delay(dur, function()
+		lockMove(targetPlayer, false)
+	end)
+end
+
+-- Возвращает: { type="parry"|"block"|"backhit"|"none", attackerStun? }
+function BlockService:EvaluateHit(attackerPlayer, targetPlayer, attackerRoot, targetRoot)
+	local s = self._state[targetPlayer]
+	if not (s and s.blocking) then return { type = "none" } end
+
+	local forward = targetRoot.CFrame.LookVector
+	local toAtt   = attackerRoot.Position - targetRoot.Position
+	local dirXZ   = Vector3.new(toAtt.X, 0, toAtt.Z)
+	if dirXZ.Magnitude < 1e-3 then dirXZ = forward end
+	dirXZ = dirXZ.Unit
+	local dot = forward.X * dirXZ.X + forward.Z * dirXZ.Z
+	local frontDot = Constants.Block.FrontDot or 0.5
+	local since = now() - (s.started or 0)
+
+	if dot >= frontDot then
+		if since <= (Constants.Block.ParryWindow or 0.25) then
+			local readyAt = BlockService._parryCd[targetPlayer] or 0
+			if now() >= readyAt then
+				-- парри разрешён
+				local cooldown = Constants.Block.ParryCooldown or 10.0
+				BlockService._parryCd[targetPlayer] = now() + cooldown
+				-- HUD: отправляем кд парри
+				RE_ParryState:FireClient(targetPlayer, {
+					cooldown = cooldown,
+					readyAt = BlockService._parryCd[targetPlayer],
+				})
+				-- VFX парри (фиксация в мире)
+				local vfxName = Constants.Block.ParryVFX or "Parry"
+				local char = targetPlayer.Character
+				if char then
+					local attachMode = (Constants.Block.ParryAttachMode or "head_lockworld")
+					local opts = {
+						duration      = Constants.Block.ParryVFXLifetime or 0.6,
+						emitCount     = Constants.Block.ParryVFXEmitCount or 1,
+						throttle      = 0.08,
+						forwardOffset = Constants.Block.ParryVFXForwardOffset or 2.5,
+						headYOffset   = Constants.Block.ParryVFXHeadYOffset or 0.2,
+						minAboveGround= Constants.Block.ParryVFXMinHeightAboveGround or 0.5,
+						debugVisual   = Constants.Block.ParryVFXDebug or false,
+					}
+					opts.attach = "head_lockworld"
+					require(script.Parent.VFXService):PlayOnCharacter(char, vfxName, opts)
+				end
+				return { type = "parry", attackerStun = Constants.Block.AttackerStun or 3.0 }
+			else
+				-- парри на кд → обычный фронт-блок
+				return { type = "block" }
+			end
+		else
+			return { type = "block" }
+		end
+	else
+		return { type = "backhit" }
+	end
+end
+
+function BlockService:Start()
+	RE_SetBlocking.OnServerEvent:Connect(function(player, enabled)
+		self:SetBlocking(player, enabled == true)
+	end)
+
+	Players.PlayerRemoving:Connect(function(plr)
+		self._state[plr] = nil
+		self._prevMove[plr] = nil
+		self._parryCd[plr]  = nil
+	end)
+
+	print("[Server] BlockService ready")
+end
+
+return BlockService  -  Edit
+  20:22:32.084  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.084    -  Edit
+  20:22:32.084  ===SCRIPT===
+PATH:ServerScriptService/Services/PlayerLoadoutService
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.084  local Players = game:GetService("Players")
+local RS      = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+local AbilityDefs = require(ServerStorage:WaitForChild("AbilityDefs"))
+local Events = RS:WaitForChild("Remotes"):WaitForChild("Events")
+local RE_SetLoadout = Events:WaitForChild("RE_SetLoadout")
+
+local PlayerLoadoutService = {
+	_loadouts = {} -- [player] = { [slot] = defTable }
+}
+
+-- Сборка дефолтного лоадаута (можно будет менять под персонажа)
+local function defaultLoadout()
+	-- пример: 3 умения в слотах 1,2,3
+	local ids = { "dash_step", "omni_punch", "azure_scope" }
+	local list = {}
+	for _, id in ipairs(ids) do
+		local def = AbilityDefs[id]
+		if def then table.insert(list, def) end
+	end
+	return list
+end
+
+local function sanitizeForClient(def)
+	return {
+		Id = def.Id,
+		DisplayName = def.DisplayName,
+		Cooldown = def.Cooldown,
+		Slot = def.Slot,
+	}
+end
+
+function PlayerLoadoutService:Get(player)
+	return self._loadouts[player]
+end
+
+function PlayerLoadoutService:Start()
+	local function assign(plr)
+		local list = defaultLoadout()
+		-- сохраняем по слотам
+		local bySlot = {}
+		for _, def in ipairs(list) do
+			if def.Slot then
+				bySlot[def.Slot] = def
+			end
+		end
+		self._loadouts[plr] = bySlot
+
+		-- отсылаем клиенту «санитизированный» лоадаут
+		local clientList = {}
+		for slot, def in pairs(bySlot) do
+			table.insert(clientList, sanitizeForClient(def))
+		end
+		-- для стабильного порядка отсортируем по слоту
+		table.sort(clientList, function(a,b) return (a.Slot or 99) < (b.Slot or 99) end)
+		RE_SetLoadout:FireClient(plr, clientList)
+	end
+
+	Players.PlayerAdded:Connect(assign)
+	for _, plr in ipairs(Players:GetPlayers()) do assign(plr) end
+
+	Players.PlayerRemoving:Connect(function(plr)
+		self._loadouts[plr] = nil
+	end)
+end
+
+return PlayerLoadoutService  -  Edit
+  20:22:32.084  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.084    -  Edit
+  20:22:32.084  ===SCRIPT===
+PATH:ServerScriptService/Services/AbilityService
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.084  local RS = game:GetService("ReplicatedStorage")
+
+local Constants = require(RS.Shared.Modules.Constants)
+local Events    = RS:WaitForChild("Remotes"):WaitForChild("Events")
+local RE_RequestAbilityCast = Events:WaitForChild("RE_RequestAbilityCast")
+local RE_AbilityCastAck     = Events:WaitForChild("RE_AbilityCastAck")
+
+local PlayerLoadoutService = require(script.Parent.PlayerLoadoutService)
+local BlockService         = require(script.Parent.BlockService)
+local State                = require(RS.Shared.Modules.StateManager)
+
+local AbilityService = {
+	_cd = {} -- [player] = { [slot] = nextReadyAt }
+}
+
+local function now() return os.clock() end
+
+local function canCast(player, slot)
+	-- запреты по состоянию
+	if State:HasTag(player, Constants.Status.Stun) then return false, "stunned" end
+	if State:HasTag(player, Constants.Status.GuardBreak) then return false, "guardbreak" end
+	if BlockService:IsBlocking(player) then return false, "blocking" end
+
+	-- кд
+	local t = now()
+	AbilityService._cd[player] = AbilityService._cd[player] or {}
+	local nextAt = AbilityService._cd[player][slot] or 0
+	if t < nextAt then return false, "cooldown" end
+
+	return true
+end
+
+function AbilityService:Start()
+	RE_RequestAbilityCast.OnServerEvent:Connect(function(player, slot)
+		if type(slot) ~= "number" then return end
+
+		local ok, reason = canCast(player, slot)
+		if not ok then return end
+
+		-- найдём умение в лоадауте
+		local loadout = PlayerLoadoutService:Get(player)
+		if not loadout then return end
+		local def = loadout[slot]
+		if not def then return end
+
+		-- применяем кд
+		local cd = def.Cooldown or 3.0
+		local t  = now()
+		AbilityService._cd[player][slot] = t + cd
+
+		-- серверный ack для UI
+		RE_AbilityCastAck:FireClient(player, {
+			Slot = slot,
+			AbilityId = def.Id,
+			Cooldown = cd,
+			DisplayName = def.DisplayName,
+		})
+
+		-- TODO: здесь же будет реальная логика умения (эффекты, урон), сейчас — только кд
+	end)
+end
