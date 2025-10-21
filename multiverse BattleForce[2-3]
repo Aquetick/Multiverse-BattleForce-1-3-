@@ -1,0 +1,1611 @@
+
+return AbilityService  -  Edit
+  20:22:32.084  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.084    -  Edit
+  20:22:32.084  ===SCRIPT===
+PATH:ReplicatedStorage/Shared/Modules/AbilityBase
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.084  -- базовый класс способности (серверная логика)
+local AbilityBase = {}
+AbilityBase.__index = AbilityBase
+
+function AbilityBase.new(owner)
+	local self = setmetatable({}, AbilityBase)
+	self.Owner = owner
+	self.Cooldown = 5
+	self.UltCost = 0
+	self.LastCast = 0
+	self.Id = "AbilityBase"
+	return self
+end
+
+function AbilityBase:CanCast(state)
+	-- проверка кулдауна/статусов
+	local t = os.clock()
+	if (t - (self.LastCast or 0)) < self.Cooldown then return false, "cooldown" end
+	if state:HasTag(self.Owner, "Stun") then return false, "stunned" end
+	return true
+end
+
+function AbilityBase:PayCost(state)
+	-- списание ульты/ресурсов (переопределяй при нужде)
+	return true
+end
+
+function AbilityBase:Execute(params)
+	-- сама логика кастования (переопределяй в наследниках)
+end
+
+function AbilityBase:Cleanup()
+end
+
+return AbilityBase  -  Edit
+  20:22:32.084  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.084    -  Edit
+  20:22:32.084  ===SCRIPT===
+PATH:ReplicatedStorage/Shared/Modules/StateManager
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.084  local Players = game:GetService("Players")
+local Signal = require(script.Parent.Signal)
+local Constants = require(script.Parent.Constants)
+
+local StateManager = {
+	_states = {}, -- [player] = {hp, sta, ult, tags, changed=Signal}
+}
+
+function StateManager:_ensure(player)
+	local s = self._states[player]
+	if s then return s end
+	s = {
+		hp = Constants.Resources.MaxHP,
+		sta = Constants.Resources.MaxSTA,
+		ult = 0,
+		tags = {},
+		changed = Signal.new(),
+	}
+	self._states[player] = s
+	return s
+end
+
+function StateManager:InitPlayer(player)
+	self:_ensure(player)
+end
+
+function StateManager:RemovePlayer(player)
+	local s = self._states[player]
+	if s and s.changed then
+		s.changed:Destroy()
+	end
+	self._states[player] = nil
+end
+
+function StateManager:Get(player)
+	return self:_ensure(player)
+end
+
+function StateManager:SetResource(player, key, value)
+	local s = self:_ensure(player)
+	local v = value
+	if key == "hp" then
+		v = math.clamp(value, 0, Constants.Resources.MaxHP)
+	elseif key == "sta" then
+		v = math.clamp(value, 0, Constants.Resources.MaxSTA)
+	elseif key == "ult" then
+		v = math.clamp(value, 0, Constants.Resources.MaxULT)
+	end
+	s[key] = v
+	s.changed:Fire("res", key, v)
+end
+
+function StateManager:GetResource(player, key)
+	local s = self:_ensure(player)
+	return s[key]
+end
+
+function StateManager:AddTag(player, tag, duration)
+	local s = self:_ensure(player)
+	s.tags[tag] = true
+	s.changed:Fire("tag", tag, true)
+	if duration and duration > 0 then
+		task.delay(duration, function()
+			if self._states[player] then
+				self:RemoveTag(player, tag)
+			end
+		end)
+	end
+end
+
+function StateManager:RemoveTag(player, tag)
+	local s = self:_ensure(player)
+	if s.tags[tag] then
+		s.tags[tag] = nil
+		s.changed:Fire("tag", tag, false)
+	end
+end
+
+function StateManager:HasTag(player, tag)
+	local s = self:_ensure(player)
+	return s.tags[tag] == true
+end
+
+Players.PlayerRemoving:Connect(function(plr)
+	StateManager:RemovePlayer(plr)
+end)
+
+return StateManager  -  Edit
+  20:22:32.085  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.085    -  Edit
+  20:22:32.085  ===SCRIPT===
+PATH:ReplicatedStorage/Shared/Modules/Signal
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.085  -- простой сигнал на BindableEvent
+local Signal = {}
+Signal.__index = Signal
+
+function Signal.new()
+	local self = setmetatable({}, Signal)
+	self._be = Instance.new("BindableEvent")
+	self.Event = self._be.Event
+	return self
+end
+
+function Signal:Fire(...)
+	self._be:Fire(...)
+end
+
+function Signal:Destroy()
+	self._be:Destroy()
+end
+
+return Signal  -  Edit
+  20:22:32.085  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.085    -  Edit
+  20:22:32.085  ===SCRIPT===
+PATH:ReplicatedStorage/Shared/Modules/Constants
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.085  local Constants = {}
+
+Constants.PrivatePlusGamepassId = 0
+Constants.MaxPlayers = 16
+
+Constants.Status = {
+	IFrame = "IFrame",
+	Stun  = "Stun",
+	Slow  = "Slow",
+	DoT   = "DoT",
+	Rage  = "Rage",
+	GuardBreak = "GuardBreak",
+}
+
+Constants.Resources = {
+	MaxHP = 100,
+	MaxSTA = 100,
+	MaxULT = 100,
+	StaRegenPerSec = 10.5,
+	StaRegenDelay  = 0.8,
+}
+
+Constants.Dash = {
+	Cost = 10,
+	Speed = 90,
+	Duration = 0.18,
+	Cooldown = 0.7,
+	IFrame = 0.2,
+	DoubleTapWindow = 0.25,
+}
+
+Constants.Melee = {
+	ComboHits = 4,
+	Damage = {2, 2, 3, 3},
+
+	ComboWindow      = 2.0,
+	AttackInterval   = 0.5,
+	StepCooldown     = 0.12,
+	AutoComboInterval= 0.5,
+
+	SeriesLockout = 1.0,
+
+	HitboxSize    = Vector3.new(4, 4, 5),
+	HitboxOffset  = 2.5,
+	HitboxYOffset = 0.0,
+	HitboxBackPad = 1.0,
+	HitboxDebug   = true,
+	HitboxDebugLife = 0.12,
+
+	Knockback = 35,
+	LaunchUp  = 45,
+	Hitstun   = 0.35,
+
+	BaseWalkSpeed = 16,
+	SlowWalkSpeed = 8,
+	MissFourthSlowDuration = 1.5,
+
+	UltGainPerHit = 50,
+
+	-- VFX удара
+	HitVFXName       = "M1_Hit",
+	HitVFXLifetime   = 1.2,
+	HitVFXEmitCount  = 30,
+
+	HitMarkerName = "HIT",
+	HitConfirmMaxDelay = 0.6,
+
+	Magnet = {
+		Enabled = true,
+		MinDist = 3,
+		MaxDist = 12,
+		Boost   = 20,
+		ForwardDot = 0.2,
+	},
+
+	HitFX = {
+		ShakeBase  = 0.8,
+		ShakeHeavy = 1.2,
+		Duration   = 0.06,
+	}
+}
+
+Constants.Block = {
+	ParryWindow       = 2,  -- окно парри
+	-- ВАЖНО: поменяли местами длительности
+	AttackerStun      = 3.0,   -- стан атакующему при парри (ДОЛГИЙ)
+	HeavyBlockStun    = 0.4,   -- наказ за M1_4 в блок (КОРОТКИЙ)
+	ParryCooldown     = 10.0,  -- парри можно 1 раз в 10 сек
+
+	ParryVFX          = "Parry",
+	ParryVFXEmitCount = 1,
+	ParryVFXLifetime  = 1,
+
+	-- режим привязки VFX парри
+	ParryAttachMode   = "head_lockworld",
+
+	-- позиция парри‑VFX
+	ParryVFXForwardOffset         = 2.5,
+	ParryVFXHeadYOffset           = 0.2,
+	ParryVFXMinHeightAboveGround  = 0.5,
+	ParryVFXDebug                 = false,
+
+	FrontDot          = 0.5,
+	SpeedMultiplier   = 0.5,
+
+	BlockAnimStart = "Block",
+	BlockAnimLoop  = "Block_Loop",
+}
+
+Constants.Ult = {
+	AnimName = "Awakening",
+	AnimDuration = 2.0,
+	DrainPerSec = 8,
+	RequireFull = true,
+	LockMovementDuringAnim = true,
+	GainsDuringUltPerHit = 0.5,
+}
+
+return Constants  -  Edit
+  20:22:32.085  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.085    -  Edit
+  20:22:32.085  ===SCRIPT===
+PATH:ReplicatedStorage/Shared/Modules/AnimatorUtil
+CLASS:ModuleScript
+--SOURCE--  -  Edit
+  20:22:32.085  local RS = game:GetService("ReplicatedStorage")
+local KFSProvider = game:GetService("KeyframeSequenceProvider")
+local ContentProvider = game:GetService("ContentProvider")
+
+local AnimatorUtil = {}
+
+-- КЭШ: id анимации по объекту и треки по персонажу+имени
+local animIdCache = setmetatable({}, { __mode = "k" }) -- [Animation|KeyframeSequence] = "rbxassetid://..."
+local trackCache  = setmetatable({}, { __mode = "k" }) -- [character] = { ["folder/name"] = AnimationTrack }
+
+-- Найти объект анимации в Assets/Animations/R6/<folder>/<name>
+local function findAnimObject(folderName, animName)
+	local base = RS:FindFirstChild("Assets")
+	if not base then return nil end
+	base = base:FindFirstChild("Animations")
+	if not base then return nil end
+	base = base:FindFirstChild("R6")
+	if not base then return nil end
+	local folder = base:FindFirstChild(folderName) or base:FindFirstChild("Common")
+	if not folder then return nil end
+	return folder:FindFirstChild(animName)
+end
+
+-- Разрешить AnimationId (с кэшем). Для KFS — регистрируем один раз.
+local function resolveAnimationId(animObj)
+	if not animObj then return nil end
+	local cached = animIdCache[animObj]
+	if cached then return cached end
+
+	local id
+	if animObj:IsA("Animation") then
+		id = animObj.AnimationId ~= "" and animObj.AnimationId or nil
+	elseif animObj:IsA("KeyframeSequence") then
+		local ok, regId = pcall(function()
+			return KFSProvider:RegisterKeyframeSequence(animObj)
+		end)
+		if ok then id = regId end
+	end
+
+	if id and id ~= "" then
+		animIdCache[animObj] = id
+		return id
+	end
+	return nil
+end
+
+local function getAnimator(character)
+	if not character then return nil end
+	local hum = character:FindFirstChildOfClass("Humanoid")
+	if not hum then return nil end
+	local animator = hum:FindFirstChildOfClass("Animator")
+	if not animator then
+		animator = Instance.new("Animator")
+		animator.Parent = hum
+	end
+	return animator
+end
+
+-- Предзагрузка списка клипов (по именам) из папки
+function AnimatorUtil.PreloadList(folderName, names)
+	local toPreload = {}
+	for _, name in ipairs(names) do
+		local obj = findAnimObject(folderName, name)
+		if obj then
+			local id = resolveAnimationId(obj)
+			if id and id ~= "" then
+				local anim = Instance.new("Animation")
+				anim.AnimationId = id
+				table.insert(toPreload, anim)
+			end
+		end
+	end
+	if #toPreload > 0 then
+		pcall(function() ContentProvider:PreloadAsync(toPreload) end)
+	end
+end
+
+-- Сбросить кэш треков для персонажа (на респауне)
+function AnimatorUtil.InvalidateCharacter(character)
+	local cache = trackCache[character]
+	if cache then
+		for _, tr in pairs(cache) do
+			pcall(function() tr:Stop(0) end)
+			pcall(function() tr:Destroy() end)
+		end
+	end
+	trackCache[character] = nil
+end
+
+-- Получить/создать и закэшировать AnimationTrack (folder/name)
+local function getTrack(character, folder, animName)
+	local animator = getAnimator(character)
+	if not animator then return nil end
+
+	local key = (folder or "Common") .. "/" .. animName
+	local charCache = trackCache[character]
+	if not charCache then
+		charCache = {}
+		trackCache[character] = charCache
+	end
+
+	local track = charCache[key]
+	if track and track.IsPlaying ~= nil then
+		return track
+	end
+
+	-- Загружаем новый трек
+	local animObj = findAnimObject(folder or "Common", animName)
+	if not animObj then
+		warn(string.format("[AnimatorUtil] Animation not found: %s/%s", tostring(folder), animName))
+		return nil
+	end
+	local animId = resolveAnimationId(animObj)
+	if not animId then
+		warn(string.format("[AnimatorUtil] Can't resolve AnimationId: %s/%s", tostring(folder), animName))
+		return nil
+	end
+
+	local anim = Instance.new("Animation")
+	anim.AnimationId = animId
+
+	local ok, loadedTrack = pcall(function()
+		return animator:LoadAnimation(anim)
+	end)
+	if not ok or not loadedTrack then
+		warn("[AnimatorUtil] LoadAnimation failed for", animName)
+		return nil
+	end
+
+	-- Пытаемся поднять приоритет (если API доступен)
+	pcall(function()
+		loadedTrack.Priority = Enum.AnimationPriority.Action -- или Action4, если хочешь вообще над всем
+	end)
+
+	charCache[key] = loadedTrack
+	return loadedTrack
+end
+
+-- Проиграть анимацию быстро, переиспользуя кэш треков
+-- params: { folder="Common", speed=1, fade=0.02, weight=1, looped=false }
+function AnimatorUtil.Play(character, animName, params)
+	params = params or {}
+	local folder = params.folder or "Common"
+	local speed  = params.speed or 1
+	local fade   = params.fade or 0.02
+	local weight = params.weight or 1
+	local looped = params.looped or false
+
+	local track = getTrack(character, folder, animName)
+	if not track then return nil end
+
+	track.Looped = looped
+	-- На всякий случай обнулим и мгновенно стартанём
+	pcall(function()
+		track:Stop(0)
+		track:Play(fade, weight, 1)
+		if speed ~= 1 then track:AdjustSpeed(speed) end
+	end)
+
+	return track
+end
+
+return AnimatorUtil  -  Edit
+  20:22:32.085  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.085    -  Edit
+  20:22:32.086  ===SCRIPT===
+PATH:StarterPlayer/StarterPlayerScripts/Controllers/Bootstrap
+CLASS:LocalScript
+--SOURCE--  -  Edit
+  20:22:32.086  print("[Client] Init OK")  -  Edit
+  20:22:32.086  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.086    -  Edit
+  20:22:32.086  ===SCRIPT===
+PATH:StarterPlayer/StarterPlayerScripts/Controllers/InputController
+CLASS:LocalScript
+--SOURCE--  -  Edit
+  20:22:32.086  -- StarterPlayerScripts/Controllers/InputController.client
+-- Q-дэш (A/S/D) + ЛКМ (M1 с HIT-маркерами, предсказание) + G (ULT) + F (Block).
+-- Включены отладочные принты для F.
+
+local Players = game:GetService("Players")
+local UIS     = game:GetService("UserInputService")
+local RS      = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+
+-- Remotes
+local Remotes = RS:WaitForChild("Remotes")
+local Events  = Remotes:WaitForChild("Events")
+local RE_Dash        = Events:WaitForChild("RE_RequestDash")
+local RE_DashOK      = Events:WaitForChild("RE_DashOK")
+local RE_M1Request   = Events:WaitForChild("RE_M1Request")
+local RE_M1Ack       = Events:WaitForChild("RE_M1Ack")
+local RE_M1DoHit     = Events:WaitForChild("RE_M1DoHit")
+local RE_M1Impact    = Events:WaitForChild("RE_M1Impact")
+local RE_UltRequest  = Events:WaitForChild("RE_UltRequest")
+local RE_UltAck      = Events:WaitForChild("RE_UltAck")
+local RE_SetBlocking = Events:WaitForChild("RE_SetBlocking")
+local RE_BlockAck    = Events:WaitForChild("RE_BlockAck")
+
+-- Constants (с фолбэком)
+local okConst, Constants = pcall(function()
+	return require(RS:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Constants"))
+end)
+if not okConst then
+	Constants = {
+		Melee = { AutoComboInterval=0.5, ComboHits=4, ComboWindow=2.0, AttackInterval=0.5, SeriesLockout=1.0, HitMarkerName="HIT",
+			HitFX={ShakeBase=0.8, ShakeHeavy=1.2, Duration=0.06} },
+		Ult   = { AnimName="Awakening", AnimDuration=2.0 },
+		Block = { BlockAnimStart="Block", BlockAnimLoop="Block_Loop" }
+	}
+end
+
+-- AnimatorUtil
+local AnimatorUtil = require(RS.Shared.Modules.AnimatorUtil)
+
+-- Предзагрузка анимаций
+local PRELOAD = {
+	"FrontDash","BackDash","SideDashA","SideDashD",
+	"M1_1","M1_2","M1_3","M1_4",
+	Constants.Ult.AnimName or "Awakening",
+	Constants.Block.BlockAnimStart or "Block",
+	Constants.Block.BlockAnimLoop  or "Block_Loop",
+}
+task.spawn(function() AnimatorUtil.PreloadList("Common", PRELOAD) end)
+player.CharacterAdded:Connect(function(char)
+	AnimatorUtil.InvalidateCharacter(char)
+	task.defer(function() AnimatorUtil.PreloadList("Common", PRELOAD) end)
+end)
+
+local function getCamPlanar()
+	local camCF = workspace.CurrentCamera.CFrame
+	local f = Vector3.new(camCF.LookVector.X, 0, camCF.LookVector.Z); if f.Magnitude < 1e-3 then f = Vector3.new(0,0,-1) end
+	f = f.Unit
+	local r = Vector3.new(camCF.RightVector.X, 0, camCF.RightVector.Z).Unit
+	return f, r
+end
+
+-- ===== ДЭШ =====
+local moveDown = { A=false, S=false, D=false }
+local lastDirKey
+local DASH_ANIMS = { front="FrontDash", back="BackDash", left="SideDashA", right="SideDashD" }
+local lastDashTrack
+
+local function buildDashVector()
+	local f, r = getCamPlanar()
+	local candidates = {}
+	if moveDown.A then table.insert(candidates, "A") end
+	if moveDown.S then table.insert(candidates, "S") end
+	if moveDown.D then table.insert(candidates, "D") end
+	local key
+	if #candidates == 0 then key = "Forward" else
+		if lastDirKey and table.find(candidates, lastDirKey) then key = lastDirKey else key = candidates[1] end
+	end
+	local dir, name
+	if key == "A" then dir = -r; name="left"
+	elseif key == "S" then dir = -f; name="back"
+	elseif key == "D" then dir =  r; name="right"
+	else dir = f; name="front" end
+	return dir, name
+end
+
+local function playDashAnim(dirName)
+	local char = player.Character; if not char then return end
+	if lastDashTrack then pcall(function() lastDashTrack:Stop(0) end) end
+	local animName = DASH_ANIMS[dirName or "front"] or "FrontDash"
+	lastDashTrack = AnimatorUtil.Play(char, animName, { folder="Common", speed=1, fade=0.01, weight=1, looped=false })
+end
+
+local function sendDash()
+	local dir, name = buildDashVector(); if not dir then return end
+	dir = Vector3.new(dir.X, 0, dir.Z).Unit
+	RE_Dash:FireServer(dir, name)
+end
+
+RE_DashOK.OnClientEvent:Connect(function(dirName) playDashAnim(dirName) end)
+
+-- ===== M1 с маркером HIT =====
+local isHoldingM1 = false
+local autoThread  = nil
+local predictedStep, lastLocalAttackAt, lastSentAt, seriesLockUntil = 0, 0, 0, 0
+
+local ComboHits      = Constants.Melee.ComboHits or 4
+local ComboWindow    = Constants.Melee.ComboWindow or 2.0
+local AttackInterval = Constants.Melee.AttackInterval or 0.5
+local SeriesLockout  = Constants.Melee.SeriesLockout or 1.0
+local AutoComboInt   = Constants.Melee.AutoComboInterval or 0.5
+local HIT_MARKER     = Constants.Melee.HitMarkerName or "HIT"
+local GATE_FUDGE     = 0.02
+local time           = os.clock
+
+local lastM1Track, lastMarkerConn
+local isBlockingLocal = false -- локально не бьём во время блока
+
+local function playM1(step)
+	local char = player.Character; if not char then return end
+	local name = ("M1_%d"):format(step)
+	if lastM1Track then pcall(function() lastM1Track:Stop(0) end) end
+	lastM1Track = AnimatorUtil.Play(char, name, { folder="Common", speed=1, fade=0.01, weight=1, looped=false })
+	if lastMarkerConn then lastMarkerConn:Disconnect() lastMarkerConn=nil end
+	if lastM1Track and lastM1Track.GetMarkerReachedSignal then
+		lastMarkerConn = lastM1Track:GetMarkerReachedSignal(HIT_MARKER):Connect(function()
+			RE_M1DoHit:FireServer(step)
+		end)
+	end
+end
+
+local function predictNextStep(now)
+	if (now - lastLocalAttackAt) <= ComboWindow then
+		predictedStep += 1
+		if predictedStep > ComboHits then predictedStep = 1 end
+	else
+		predictedStep = 1
+	end
+	lastLocalAttackAt = now
+	return predictedStep
+end
+
+local function canSendM1(now)
+	if now < seriesLockUntil then return false end
+	if (now - lastSentAt) < (AttackInterval - GATE_FUDGE) then return false end
+	return not isBlockingLocal
+end
+
+local function attemptM1()
+	local now = time(); if not canSendM1(now) then return end
+	local step = predictNextStep(now)
+	playM1(step)
+	if step >= ComboHits then seriesLockUntil = now + SeriesLockout; isHoldingM1=false end
+	local f = select(1, getCamPlanar())
+	RE_M1Request:FireServer(Vector3.new(f.X, 0, f.Z))
+	lastSentAt = now
+end
+
+RE_M1Ack.OnClientEvent:Connect(function(data)
+	if type(data) ~= "table" then return end
+	if data.isLaunch == true then
+		seriesLockUntil = time() + SeriesLockout
+		predictedStep = 0
+		isHoldingM1   = false
+	end
+end)
+
+RE_M1Impact.OnClientEvent:Connect(function(data)
+	if type(data) ~= "table" or (data.landed or 0) <= 0 then return end
+	local intensity = data.intensity or (Constants.Melee.HitFX.ShakeBase or 0.8)
+	local dur       = data.duration  or (Constants.Melee.HitFX.Duration or 0.06)
+	local cam = workspace.CurrentCamera
+	local t0 = os.clock()
+	local conn; conn = RunService.RenderStepped:Connect(function()
+		local t = os.clock() - t0
+		if t >= dur then conn:Disconnect() return end
+		local amp = intensity * (1 - t/dur)
+		local dx = (math.random()-0.5)*2*amp
+		local dy = (math.random()-0.5)*1*amp
+		cam.CFrame = cam.CFrame * CFrame.new(dx*0.05, dy*0.05, 0)
+	end)
+end)
+
+-- ===== ULT (G) =====
+RE_UltAck.OnClientEvent:Connect(function(data)
+	if type(data) ~= "table" then return end
+	if data.phase == "begin" then
+		local char = player.Character; if char then
+			AnimatorUtil.Play(char, data.animName or "Awakening", { folder="Common", speed=1, fade=0.01, weight=1, looped=false })
+		end
+	end
+end)
+
+-- ===== БЛОК (F) =====
+local lastBlockTrack
+local function playBlockAnim(enabled)
+	local char = player.Character; if not char then return end
+	if enabled then
+		local animName = Constants.Block.BlockAnimLoop or "Block_Loop"
+		lastBlockTrack = AnimatorUtil.Play(char, animName, { folder="Common", speed=1, fade=0.05, weight=1, looped=true })
+		if not lastBlockTrack then
+			animName = Constants.Block.BlockAnimStart or "Block"
+			lastBlockTrack = AnimatorUtil.Play(char, animName, { folder="Common", speed=1, fade=0.05, weight=1, looped=true })
+		end
+	else
+		if lastBlockTrack then pcall(function() lastBlockTrack:Stop(0.1) end) lastBlockTrack = nil end
+	end
+end
+
+-- ACK от сервера на включение/выключение бло  -  Edit
+  20:22:32.086  ка (ОБЯЗАТЕЛЬНО для теста)
+RE_BlockAck.OnClientEvent:Connect(function(started)
+	print("[BlockAck] started:", started) -- ОТЛАДКА
+	isBlockingLocal = (started == true)
+	playBlockAnim(isBlockingLocal)
+end)
+
+-- ===== Инпуты =====
+UIS.InputBegan:Connect(function(input, gp)
+	if gp then return end
+
+	if input.KeyCode == Enum.KeyCode.A then moveDown.A = true; lastDirKey="A" end
+	if input.KeyCode == Enum.KeyCode.S then moveDown.S = true; lastDirKey="S" end
+	if input.KeyCode == Enum.KeyCode.D then moveDown.D = true; lastDirKey="D" end
+
+	if input.KeyCode == Enum.KeyCode.Q then sendDash() end
+	if input.KeyCode == Enum.KeyCode.G then RE_UltRequest:FireServer() end
+
+	if input.KeyCode == Enum.KeyCode.F then
+		print("[Input] F down")          -- ОТЛАДКА
+		RE_SetBlocking:FireServer(true) -- запрос включить блок
+	end
+
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if not isBlockingLocal then
+			isHoldingM1 = true
+			attemptM1()
+			if not autoThread then
+				autoThread = task.spawn(function()
+					while isHoldingM1 do
+						task.wait(AutoComboInt)
+						if not isHoldingM1 then break end
+						attemptM1()
+					end
+					autoThread = nil
+				end)
+			end
+		end
+	end
+end)
+
+UIS.InputEnded:Connect(function(input, gp)
+	if gp then return end
+
+	if input.KeyCode == Enum.KeyCode.A then moveDown.A = false end
+	if input.KeyCode == Enum.KeyCode.S then moveDown.S = false end
+	if input.KeyCode == Enum.KeyCode.D then moveDown.D = false end
+
+	if input.KeyCode == Enum.KeyCode.F then
+		print("[Input] F up")            -- ОТЛАДКА
+		RE_SetBlocking:FireServer(false) -- запрос выключить блок
+	end
+
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		isHoldingM1 = false
+	end
+end)
+
+sprint("[Input] Q-dash + M1(HIT) + ULT(G) + Block(F) ready")  -  Edit
+  20:22:32.086  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.086    -  Edit
+  20:22:32.086  ===SCRIPT===
+PATH:StarterPlayer/StarterPlayerScripts/Controllers/AbilityController
+CLASS:LocalScript
+--SOURCE--  -  Edit
+  20:22:32.086  local Players    = game:GetService("Players")
+local RS         = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local Remotes = RS:WaitForChild("Remotes")
+local Events  = Remotes:WaitForChild("Events")
+local RE_SetLoadout         = Events:WaitForChild("RE_SetLoadout")
+local RE_RequestAbilityCast = Events:WaitForChild("RE_RequestAbilityCast")
+local RE_AbilityCastAck     = Events:WaitForChild("RE_AbilityCastAck")
+
+-- HUD
+local hud = player:WaitForChild("PlayerGui"):WaitForChild("HUD")
+local attacksFrame = hud:WaitForChild("Attacks")
+local template = attacksFrame:WaitForChild("AttackTemplate")
+local layout = attacksFrame:WaitForChild("UIListLayout") -- FillDirection=Horizontal, HorizontalAlignment=Center
+
+-- Локальное состояние
+local slots = {}  -- [slot] = {frame, nameLabel, numLabel, fill, cooldownEnd=0}
+local keyBySlot = { [1] = Enum.KeyCode.One, [2] = Enum.KeyCode.Two, [3] = Enum.KeyCode.Three, [4] = Enum.KeyCode.Four }
+
+local function clearAttacks()
+	for _, child in ipairs(attacksFrame:GetChildren()) do
+		if child:IsA("Frame") and child.Name ~= "AttackTemplate" then
+			child:Destroy()
+		end
+	end
+	slots = {}
+end
+
+local function createFill(frame)
+	local fill = frame:FindFirstChild("fill")
+	if not fill then
+		fill = Instance.new("Frame")
+		fill.Name = "fill"
+		fill.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+		fill.BackgroundTransparency = 0.35
+		fill.BorderSizePixel = 0
+		fill.Parent = frame
+		fill.ZIndex = 0
+	end
+	-- сверху вниз: AnchorPoint 0,0; Position 0,0; Height = 0..1
+	fill.AnchorPoint = Vector2.new(0,0)
+	fill.Position    = UDim2.new(0,0,0,0)
+	fill.Size        = UDim2.new(1,0,0,0)
+	fill.Visible     = false
+	return fill
+end
+
+local function buildAttacks(clientList)
+	clearAttacks()
+	-- отсортировано по Slot уже, но ещё раз на всякий
+	table.sort(clientList, function(a,b) return (a.Slot or 99) < (b.Slot or 99) end)
+	for _, def in ipairs(clientList) do
+		local slot = def.Slot
+		local clone = template:Clone()
+		clone.Name = ("AttackSlot_%d"):format(slot)
+		clone.Visible = true
+		clone.Parent  = attacksFrame
+
+		local nameLabel = clone:FindFirstChild("AbilityName")
+		local numLabel  = clone:FindFirstChild("NumberAbility")
+		local fill      = createFill(clone)
+
+		if nameLabel and nameLabel:IsA("TextLabel") then
+			nameLabel.Text = def.DisplayName or def.Id or ("Slot "..tostring(slot))
+		end
+		if numLabel and numLabel:IsA("TextLabel") then
+			local keyText = (slot == 1 and "1") or (slot == 2 and "2") or (slot == 3 and "3") or "4"
+			numLabel.Text = keyText
+		end
+
+		slots[slot] = {
+			frame = clone,
+			nameLabel = nameLabel,
+			numLabel = numLabel,
+			fill = fill,
+			cooldownEnd = 0,
+			cooldown = def.Cooldown or 3.0,
+			id = def.Id,
+		}
+	end
+end
+
+-- кд-заливка
+local function setCooldownUI(slot, cooldown)
+	local entry = slots[slot]; if not entry then return end
+	local fill  = entry.fill
+	entry.cooldownEnd = tick() + cooldown
+	entry.cooldown    = cooldown
+	fill.Visible = true
+	fill.Size = UDim2.new(1,0,1,0) -- старт с полной высоты
+	-- анимируем через RenderStepped плавно вниз
+	local conn
+	conn = RunService.RenderStepped:Connect(function()
+		local tLeft = math.max(0, entry.cooldownEnd - tick())
+		local ratio = 0
+		if entry.cooldown > 0 then
+			ratio = tLeft / entry.cooldown
+		end
+		fill.Size = UDim2.new(1,0, ratio, 0)
+		if tLeft <= 0 then
+			fill.Visible = false
+			if conn then conn:Disconnect() end
+		end
+	end)
+end
+
+-- От сервера пришёл лоадаут
+RE_SetLoadout.OnClientEvent:Connect(function(clientList)
+	buildAttacks(clientList)
+end)
+
+-- ACK каста умения (сервер одобрил) → запускаем кд заливку
+RE_AbilityCastAck.OnClientEvent:Connect(function(data)
+	if type(data) ~= "table" then return end
+	local slot = data.Slot
+	local cd   = data.Cooldown or (slots[slot] and slots[slot].cooldown) or 3
+	setCooldownUI(slot, cd)
+end)
+
+-- Бинды клавиш 1..4
+local UserInputService = game:GetService("UserInputService")
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	for slot, key in pairs(keyBySlot) do
+		if input.KeyCode == key then
+			RE_RequestAbilityCast:FireServer(slot)
+			break
+		end
+	end
+end)  -  Edit
+  20:22:32.087  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.087    -  Edit
+  20:22:32.087  ===SCRIPT===
+PATH:StarterGui/HUD/UpdateUltBar
+CLASS:LocalScript
+--SOURCE--  -  Edit
+  20:22:32.087  local Players = game:GetService("Players")
+local RS      = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local gui = player:WaitForChild("PlayerGui"):WaitForChild("HUD")
+local ultBar = gui:WaitForChild("Ultbar")
+local fill   = ultBar:WaitForChild("fill")
+local label  = ultBar:FindFirstChild("Label")
+
+if not label then
+	local lbl = Instance.new("TextLabel")
+	lbl.Name = "Label"
+	lbl.BackgroundTransparency = 1
+	lbl.AnchorPoint = Vector2.new(0.5, 0.5)
+	lbl.Position = UDim2.new(0.5, 0, 0.5, 0)
+	lbl.Size = UDim2.new(1, -8, 1, 0)
+	lbl.Font = Enum.Font.GothamBold
+	lbl.TextColor3 = Color3.fromRGB(255, 230, 120)
+	lbl.TextScaled = true
+	lbl.TextWrapped = false
+	lbl.TextXAlignment = Enum.TextXAlignment.Center
+	lbl.TextYAlignment = Enum.TextYAlignment.Center
+	lbl.ZIndex = 5
+	lbl.Parent = ultBar
+	label = lbl
+end
+
+-- Обновим свойства на всякий случай
+label.AnchorPoint = Vector2.new(0.5, 0.5)
+label.Position    = UDim2.new(0.5, 0, 0.5, 0)
+label.Size        = UDim2.new(1, -8, 1, 0)
+label.TextScaled  = true
+label.TextWrapped = false
+label.TextXAlignment = Enum.TextXAlignment.Center
+label.TextYAlignment = Enum.TextYAlignment.Center
+label.RichText = false
+label.Text = "Ultimate"
+
+local Remotes = RS:WaitForChild("Remotes")
+local Events  = Remotes:WaitForChild("Events")
+local Funcs   = Remotes:WaitForChild("Functions")
+local RE_StateUpdate = Events:WaitForChild("RE_StateUpdate")
+local RF_GetInitialState = Funcs:WaitForChild("RF_GetInitialState")
+
+local okConst, Constants = pcall(function() return require(RS.Shared.Modules.Constants) end)
+local MaxULT = (okConst and Constants and Constants.Resources and Constants.Resources.MaxULT) or 100
+
+-- Заполнение ульты — слева направо
+fill.AnchorPoint = Vector2.new(0, 0.5)
+fill.Position    = UDim2.new(0, 0, 0.5, 0)
+
+local ult = 0
+local target = 0
+local current = 0
+local full = false
+
+local function setTarget(v)
+	ult = math.clamp(v or 0, 0, MaxULT)
+	target = MaxULT > 0 and (ult / MaxULT) or 0
+end
+
+do
+	local ok, st = pcall(function() return RF_GetInitialState:InvokeServer() end)
+	if ok and st then setTarget(st.ult or 0) end
+	current = target
+	fill.Size = UDim2.new(current, 0, 1, 0)
+end
+
+RE_StateUpdate.OnClientEvent:Connect(function(evt, key, value)
+	if evt ~= "res" then return end
+	if key == "ult" then
+		setTarget(value)
+	end
+end)
+
+RunService.RenderStepped:Connect(function(dt)
+	local speed = 10 * dt
+	current = current + (target - current) * math.clamp(speed, 0, 1)
+	fill.Size = UDim2.new(current, 0, 1, 0)
+
+	local isFull = (ult >= MaxULT - 1e-3)
+	if isFull ~= full then
+		full = isFull
+		if full then
+			label.Text = "Ultimate (Press G To Activate)"
+		else
+			label.Text = "Ultimate"
+			label.TextTransparency = 0
+			label.TextStrokeTransparency = 1
+		end
+	end
+
+	if full then
+		-- Мягкая пульсация (не влияет на позиционирование)
+		local t = os.clock()
+		local pulse = 0.5 + 0.5 * math.sin(t * 4.0)
+		label.TextTransparency = 0.1 + 0.15 * pulse
+		label.TextStrokeTransparency = 0.4 + 0.3 * (1 - pulse)
+	end
+end)  -  Edit
+  20:22:32.087  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.087    -  Edit
+  20:22:32.087  ===SCRIPT===
+PATH:StarterGui/HUD/UpdateStabar
+CLASS:LocalScript
+--SOURCE--  -  Edit
+  20:22:32.087  -- StarterGui/HUD/UpdateStaBar (LocalScript)
+-- Структура: HUD(ScreenGui) -> Stabar(Frame) -> fill(Frame)
+-- Обновляет заполнение полоски стамины по серверному состоянию.
+
+local Players    = game:GetService("Players")
+local RS         = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local gui = script.Parent  -- ScreenGui "HUD"
+gui.ResetOnSpawn = false   -- чтобы HUD не мигал при респауне
+
+-- Remotes
+local Remotes = RS:WaitForChild("Remotes")
+local Events  = Remotes:WaitForChild("Events")
+local Funcs   = Remotes:WaitForChild("Functions")
+local RE_StateUpdate     = Events:WaitForChild("RE_StateUpdate")
+local RF_GetInitialState = Funcs:WaitForChild("RF_GetInitialState")
+
+-- Максимум стамины из Constants (если нет — дефолт 100)
+local okConst, Constants = pcall(function()
+	return require(RS:WaitForChild("Shared"):WaitForChild("Modules"):WaitForChild("Constants"))
+end)
+local MaxSTA = (okConst and Constants and Constants.Resources and Constants.Resources.MaxSTA) or 100
+
+-- Твоя иерархия: Stabar -> fill
+local staBar = gui:WaitForChild("Stabar")
+local fill   = staBar:WaitForChild("fill")
+
+-- Подстрахуем геометрию fill (заполнение слева направо по Scale)
+fill.AnchorPoint = Vector2.new(0, 0.5)
+fill.Position    = UDim2.new(0, 0, 0.5, 0)
+-- Высоту берём 100% от контейнера; ширина будет от 0..1
+-- fill.Size установим в applyFill
+
+-- Значения и плавная анимация
+local sta = MaxSTA
+local target = 1
+local current = 1
+
+local function setTargetBySta(v)
+	sta = math.clamp(tonumber(v) or 0, 0, MaxSTA)
+	target = MaxSTA > 0 and (sta / MaxSTA) or 0
+end
+
+local function applyFill(ratio)
+	fill.Size = UDim2.new(math.clamp(ratio, 0, 1), 0, 1, 0)
+end
+
+-- Инициализация с сервера
+do
+	local ok, init = pcall(function()
+		return RF_GetInitialState:InvokeServer()
+	end)
+	if ok and init then
+		setTargetBySta(init.sta or MaxSTA)
+	else
+		setTargetBySta(MaxSTA)
+	end
+	current = target
+	applyFill(current)
+end
+
+-- Обновления от сервера
+RE_StateUpdate.OnClientEvent:Connect(function(evt, key, value)
+	if evt ~= "res" then return end
+	if key == "sta" then
+		setTargetBySta(value)
+	end
+end)
+
+-- Плавное «подтягивание» к целевому значению
+RunService.RenderStepped:Connect(function(dt)
+	local speed = 10 * dt -- скорость анимации
+	current = current + (target - current) * math.clamp(speed, 0, 1)
+	applyFill(current)
+end)
+
+print("[StaBar] wired (HUD/Stabar/fill)")  -  Edit
+  20:22:32.087  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.087    -  Edit
+  20:22:32.087  ===SCRIPT===
+PATH:StarterGui/HUD/ParryBar
+CLASS:LocalScript
+--SOURCE--  -  Edit
+  20:22:32.087  local RS = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local hud = player:WaitForChild("PlayerGui"):WaitForChild("HUD")
+local bar = hud:WaitForChild("Parrybar")
+local fill = bar:WaitForChild("fill")
+
+local Remotes = RS:WaitForChild("Remotes")
+local Events  = Remotes:WaitForChild("Events")
+local RE_ParryState = Events:WaitForChild("RE_ParryState")
+
+-- Геометрия: слева → направо
+fill.AnchorPoint = Vector2.new(0, 0.5)
+fill.Position    = UDim2.new(0, 0, 0.5, 0)
+fill.Size        = UDim2.new(0, 0, 1, 0)
+fill.Visible     = false
+
+local readyAt = 0
+local cooldown = 0
+local conn
+
+RE_ParryState.OnClientEvent:Connect(function(data)
+	if type(data) ~= "table" then return end
+	readyAt  = data.readyAt or 0
+	cooldown = data.cooldown or 10
+
+	if conn then conn:Disconnect() conn = nil end
+	fill.Visible = true
+
+	conn = RunService.RenderStepped:Connect(function()
+		local now = os.clock()
+		local tLeft = math.max(0, readyAt - now)
+		local ratio = 0
+		if cooldown > 0 then ratio = 1 - (tLeft / cooldown) end
+		-- Ширина растёт слева направо
+		fill.Size = UDim2.new(math.clamp(ratio, 0, 1), 0, 1, 0)
+
+		if tLeft <= 0 then
+			fill.Visible = false
+			if conn then conn:Disconnect() conn = nil end
+		end
+	end)
+end)  -  Edit
+  20:22:32.087  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.087    -  Edit
+  20:22:32.087  ===SCRIPT===
+PATH:StarterGui/showhitbox/toggle/ToggleHitbox
+CLASS:LocalScript
+--SOURCE--  -  Edit
+  20:22:32.087  local RS = game:GetService("ReplicatedStorage")
+local Events = RS:WaitForChild("Remotes"):WaitForChild("Events")
+local RE_Toggle = Events:WaitForChild("RE_ToggleHitboxDebug")
+
+local btn = script.Parent
+local enabled = false
+
+local function applyVisual()
+	-- простой визуал: меняем текст/цвет
+	if btn:IsA("TextButton") then
+		btn.TextColor3 = enabled and Color3.fromRGB(0, 255, 140) or Color3.fromRGB(230, 230, 230)
+		btn.BackgroundColor3 = enabled and Color3.fromRGB(20, 50, 40) or Color3.fromRGB(30, 30, 30)
+	elseif btn:IsA("ImageButton") then
+		btn.ImageColor3 = enabled and Color3.fromRGB(0, 255, 140) or Color3.fromRGB(255, 255, 255)
+	end
+end
+
+btn.MouseButton1Click:Connect(function()
+	enabled = not enabled
+	applyVisual()
+	RE_Toggle:FireServer(enabled)
+end)
+
+applyVisual()  -  Edit
+  20:22:32.087  --ENDSOURCE--
+===ENDSCRIPT===  -  Edit
+  20:22:32.087    -  Edit
+  20:22:32.089  ===SCRIPT===
+PATH:Workspace/Dummy/Animate
+CLASS:LocalScript
+--SOURCE--  -  Edit
+  20:22:32.089  -- humanoidAnimatePlayEmote.lua
+
+local Figure = script.Parent
+local Torso = Figure:WaitForChild("Torso")
+local RightShoulder = Torso:WaitForChild("Right Shoulder")
+local LeftShoulder = Torso:WaitForChild("Left Shoulder")
+local RightHip = Torso:WaitForChild("Right Hip")
+local LeftHip = Torso:WaitForChild("Left Hip")
+local Neck = Torso:WaitForChild("Neck")
+local Humanoid = Figure:WaitForChild("Humanoid")
+local pose = "Standing"
+
+local EMOTE_TRANSITION_TIME = 0.1
+
+local userAnimateScaleRunSuccess, userAnimateScaleRunValue = pcall(function() return UserSettings():IsUserFeatureEnabled("UserAnimateScaleRun") end)
+local userAnimateScaleRun = userAnimateScaleRunSuccess and userAnimateScaleRunValue
+
+local function getRigScale()
+	if userAnimateScaleRun then
+		return Figure:GetScale()
+	else
+		return 1
+	end
+end
+
+local currentAnim = ""
+local currentAnimInstance = nil
+local currentAnimTrack = nil
+local currentAnimKeyframeHandler = nil
+local currentAnimSpeed = 1.0
+local animTable = {}
+local animNames = { 
+	idle = 	{	
+				{ id = "http://www.roblox.com/asset/?id=180435571", weight = 9 },
+				{ id = "http://www.roblox.com/asset/?id=180435792", weight = 1 }
+			},
+	walk = 	{ 	
+				{ id = "http://www.roblox.com/asset/?id=180426354", weight = 10 } 
+			}, 
+	run = 	{
+				{ id = "run.xml", weight = 10 } 
+			}, 
+	jump = 	{
+				{ id = "http://www.roblox.com/asset/?id=125750702", weight = 10 } 
+			}, 
+	fall = 	{
+				{ id = "http://www.roblox.com/asset/?id=180436148", weight = 10 } 
+			}, 
+	climb = {
+				{ id = "http://www.roblox.com/asset/?id=180436334", weight = 10 } 
+			}, 
+	sit = 	{
+				{ id = "http://www.roblox.com/asset/?id=178130996", weight = 10 } 
+			},	
+	toolnone = {
+				{ id = "http://www.roblox.com/asset/?id=182393478", weight = 10 } 
+			},
+	toolslash = {
+				{ id = "http://www.roblox.com/asset/?id=129967390", weight = 10 } 
+--				{ id = "slash.xml", weight = 10 } 
+			},
+	toollunge = {
+				{ id = "http://www.roblox.com/asset/?id=129967478", weight = 10 } 
+			},
+	wave = {
+				{ id = "http://www.roblox.com/asset/?id=128777973", weight = 10 } 
+			},
+	point = {
+				{ id = "http://www.roblox.com/asset/?id=128853357", weight = 10 } 
+			},
+	dance1 = {
+				{ id = "http://www.roblox.com/asset/?id=182435998", weight = 10 }, 
+				{ id = "http://www.roblox.com/asset/?id=182491037", weight = 10 }, 
+				{ id = "http://www.roblox.com/asset/?id=182491065", weight = 10 } 
+			},
+	dance2 = {
+				{ id = "http://www.roblox.com/asset/?id=182436842", weight = 10 }, 
+				{ id = "http://www.roblox.com/asset/?id=182491248", weight = 10 }, 
+				{ id = "http://www.roblox.com/asset/?id=182491277", weight = 10 } 
+			},
+	dance3 = {
+				{ id = "http://www.roblox.com/asset/?id=182436935", weight = 10 }, 
+				{ id = "http://www.roblox.com/asset/?id=182491368", weight = 10 }, 
+				{ id = "http://www.roblox.com/asset/?id=182491423", weight = 10 } 
+			},
+	laugh = {
+				{ id = "http://www.roblox.com/asset/?id=129423131", weight = 10 } 
+			},
+	cheer = {
+				{ id = "http://www.roblox.com/asset/?id=129423030", weight = 10 } 
+			},
+}
+local dances = {"dance1", "dance2", "dance3"}
+
+-- Existance in this list signifies that it is an emote, the value indicates if it is a looping emote
+local emoteNames = { wave = false, point = false, dance1 = true, dance2 = true, dance3 = true, laugh = false, cheer = false}
+
+function configureAnimationSet(name, fileList)
+	if (animTable[name] ~= nil) then
+		for _, connection in pairs(animTable[name].connections) do
+			connection:disconnect()
+		end
+	end
+	animTable[name] = {}
+	animTable[name].count = 0
+	animTable[name].totalWeight = 0	
+	animTable[name].connections = {}
+
+	-- check for config values
+	local config = script:FindFirstChild(name)
+	if (config ~= nil) then
+--		print("Loading anims " .. name)
+		table.insert(animTable[name].connections, config.ChildAdded:connect(function(child) configureAnimationSet(name, fileList) end))
+		table.insert(animTable[name].connections, config.ChildRemoved:connect(function(child) configureAnimationSet(name, fileList) end))
+		local idx = 1
+		for _, childPart in pairs(config:GetChildren()) do
+			if (childPart:IsA("Animation")) then
+				table.insert(animTable[name].connections, childPart.Changed:connect(function(property) configureAnimationSet(name, fileList) end))
+				animTable[name][idx] = {}
+				animTable[name][idx].anim = childPart
+				local weightObject = childPart:FindFirstChild("Weight")
+				if (weightObject == nil) then
+					animTable[name][idx].weight = 1
+				else
+					animTable[name][idx].weight = weightObject.Value
+				end
+				animTable[name].count = animTable[name].count + 1
+				animTable[name].totalWeight = animTable[name].totalWeight + animTable[name][idx].weight
+	--			print(name .. " [" .. idx .. "] " .. animTable[name][idx].anim.AnimationId .. " (" .. animTable[name][idx].weight .. ")")
+				idx = idx + 1
+			end
+		end
+	end
+
+	-- fallback to defaults
+	if (animTable[name].count <= 0) then
+		for idx, anim in pairs(fileList) do
+			animTable[name][idx] = {}
+			animTable[name][idx].anim = Instance.new("Animation")
+			animTable[name][idx].anim.Name = name
+			animTable[name][idx].anim.AnimationId = anim.id
+			animTable[name][idx].weight = anim.weight
+			animTable[name].count = animTable[name].count + 1
+			animTable[name].totalWeight = animTable[name].totalWeight + anim.weight
+--			print(name .. " [" .. idx .. "] " .. anim.id .. " (" .. anim.weight .. ")")
+		end
+	end
+end
+
+-- Setup animation objects
+function scriptChildModified(child)
+	local fileList = animNames[child.Name]
+	if (fileList ~= nil) then
+		configureAnimationSet(child.Name, fileList)
+	end	
+end
+
+script.ChildAdded:connect(scriptChildModified)
+script.ChildRemoved:connect(scriptChildModified)
+
+-- Clear any existing animation tracks
+-- Fixes issue with characters that are moved in and out of the Workspace accumulating tracks
+local animator = if Humanoid then Humanoid:FindFirstChildOfClass("Animator") else nil
+if animator then
+	local animTracks = animator:GetPlayingAnimationTracks()
+	for i,track in ipairs(animTracks) do
+		track:Stop(0)
+		track:Destroy()
+	end
+end
+
+
+for name, fileList in pairs(animNames) do 
+	configureAnimationSet(name, fileList)
+end	
+
+-- ANIMATION
+
+-- declarations
+local toolAnim = "None"
+local toolAnimTime = 0
+
+local jumpAnimTime = 0
+local jumpAnimDuration = 0.3
+
+local toolTransitionTime = 0.1
+local fallTransitionTime = 0.3
+local jumpMaxLimbVelocity = 0.75
+
+-- functions
+
+function stopAllAnimations()
+	local oldAnim = currentAnim
+
+	-- return to idle if finishing an emote
+	if (emoteNames[oldAnim] ~= nil and emoteNames[oldAnim] == false) then
+		oldAnim = "idle"
+	end
+
+	currentAnim = ""
+	currentAnimInstance = nil
+	if (currentAnimKeyframeHandler ~= nil) then
+		currentAnimKeyframeHandler:disconnect()
+	end
+
+	if (currentAnimTrack ~= nil) then
+		currentAnimTrack:Stop()
+		currentAnimTrack:Destroy()
+		currentAnimTrack = nil
+	end
+	return oldAnim
+end
+
+function setAnimationSpeed(speed)
+	if speed ~= currentAnimSpeed then
+		currentAnimSpeed = speed
+		currentAnimTrack:AdjustSpeed(currentAnimSpeed)
+	end
+end
+
+function keyFrameReachedFunc(frameName)
+	if (frameName == "End") then
+
+		local repeatAnim = currentAnim
+		-- return to idle if finishing an emote
+		if (emoteNames[repeatAnim] ~= nil and emoteNames[repeatAnim] == false) then
+			repeatAnim = "idle"
+		end
+		
+		local animSpeed = currentAnimSpeed
+		playAnimation(repeatAnim, 0.0, Humanoid)
+		setAnimationSpeed(animSpeed)
+	end
+end
+
+-- Preload animations
+function playAnimation(animName, transitionTime, humanoid) 
+		
+	local roll = math.random(1, animTable[animName].totalWeight) 
+	local origRoll = roll
+	local idx = 1
+	while (roll > animTable[animName][idx].weight) do
+		roll = roll - animTable[animName][idx].weight
+		idx = idx + 1
+	end
+--		print(animName .. " " .. idx .. " [" .. origRoll .. "]")
+	local anim = animTable[animName][idx].anim
+
+	-- switch animation		
+	if (anim ~= currentAnimInstance) then
+		
+		if (currentAnimTrack ~= nil) then
+			currentAnimTrack:Stop(transitionTime)
+			currentAnimTrack:Destroy()
+		end
+
+		currentAnimSpeed = 1.0
+	
+		-- load  -  Edit
+  20:22:32.089   it to the humanoid; get AnimationTrack
+		currentAnimTrack = humanoid:LoadAnimation(anim)
+		currentAnimTrack.Priority = Enum.AnimationPriority.Core
+		 
+		-- play the animation
+		currentAnimTrack:Play(transitionTime)
+		currentAnim = animName
+		currentAnimInstance = anim
+
+		-- set up keyframe name triggers
+		if (currentAnimKeyframeHandler ~= nil) then
+			currentAnimKeyframeHandler:disconnect()
+		end
+		currentAnimKeyframeHandler = currentAnimTrack.KeyframeReached:connect(keyFrameReachedFunc)
+		
+	end
+
+end
+
+-------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------
+
+local toolAnimName = ""
+local toolAnimTrack = nil
+local toolAnimInstance = nil
+local currentToolAnimKeyframeHandler = nil
+
+function toolKeyFrameReachedFunc(frameName)
+	if (frameName == "End") then
+--		print("Keyframe : ".. frameName)	
+		playToolAnimation(toolAnimName, 0.0, Humanoid)
+	end
+end
+
+
+function playToolAnimation(animName, transitionTime, humanoid, priority)	 
+		
+		local roll = math.random(1, animTable[animName].totalWeight) 
+		local origRoll = roll
+		local idx = 1
+		while (roll > animTable[animName][idx].weight) do
+			roll = roll - animTable[animName][idx].weight
+			idx = idx + 1
+		end
+--		print(animName .. " * " .. idx .. " [" .. origRoll .. "]")
+		local anim = animTable[animName][idx].anim
+
+		if (toolAnimInstance ~= anim) then
+			
+			if (toolAnimTrack ~= nil) then
+				toolAnimTrack:Stop()
+				toolAnimTrack:Destroy()
+				transitionTime = 0
+			end
+					
+			-- load it to the humanoid; get AnimationTrack
+			toolAnimTrack = humanoid:LoadAnimation(anim)
+			if priority then
+				toolAnimTrack.Priority = priority
+			end
+			 
+			-- play the animation
+			toolAnimTrack:Play(transitionTime)
+			toolAnimName = animName
+			toolAnimInstance = anim
+
+			currentToolAnimKeyframeHandler = toolAnimTrack.KeyframeReached:connect(toolKeyFrameReachedFunc)
+		end
+end
+
+function stopToolAnimations()
+	local oldAnim = toolAnimName
+
+	if (currentToolAnimKeyframeHandler ~= nil) then
+		currentToolAnimKeyframeHandler:disconnect()
+	end
+
+	toolAnimName = ""
+	toolAnimInstance = nil
+	if (toolAnimTrack ~= nil) then
+		toolAnimTrack:Stop()
+		toolAnimTrack:Destroy()
+		toolAnimTrack = nil
+	end
+
+
+	return oldAnim
+end
+
+-------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------
+
+
+function onRunning(speed)
+	speed /= getRigScale()
+	
+	if speed > 0.01 then
+		playAnimation("walk", 0.1, Humanoid)
+		if currentAnimInstance and currentAnimInstance.AnimationId == "http://www.roblox.com/asset/?id=180426354" then
+			setAnimationSpeed(speed / 14.5)
+		end
+		pose = "Running"
+	else
+		if emoteNames[currentAnim] == nil then
+			playAnimation("idle", 0.1, Humanoid)
+			pose = "Standing"
+		end
+	end
+end
+
+function onDied()
+	pose = "Dead"
+end
+
+function onJumping()
+	playAnimation("jump", 0.1, Humanoid)
+	jumpAnimTime = jumpAnimDuration
+	pose = "Jumping"
+end
+
+function onClimbing(speed)
+	speed /= getRigScale()
+	
+	playAnimation("climb", 0.1, Humanoid)
+	setAnimationSpeed(speed / 12.0)
+	pose = "Climbing"
+end
+
+function onGettingUp()
+	pose = "GettingUp"
+end
+
+function onFreeFall()
+	if (jumpAnimTime <= 0) then
+		playAnimation("fall", fallTransitionTime, Humanoid)
+	end
+	pose = "FreeFall"
+end
+
+function onFallingDown()
+	pose = "FallingDown"
+end
+
+function onSeated()
+	pose = "Seated"
+end
+
+function onPlatformStanding()
+	pose = "PlatformStanding"
+end
+
+function onSwimming(speed)
+	if speed > 0 then
+		pose = "Running"
+	else
+		pose = "Standing"
+	end
+end
+
+function getTool()	
+	for _, kid in ipairs(Figure:GetChildren()) do
+		if kid.className == "Tool" then return kid end
+	end
+	return nil
+end
+
+function getToolAnim(tool)
+	for _, c in ipairs(tool:GetChildren()) do
+		if c.Name == "toolanim" and c.className == "StringValue" then
+			return c
+		end
+	end
+	return nil
+end
+
+function animateTool()
+	
+	if (toolAnim == "None") then
+		playToolAnimation("toolnone", toolTransitionTime, Humanoid, Enum.AnimationPriority.Idle)
+		return
+	end
